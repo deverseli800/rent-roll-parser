@@ -24,6 +24,7 @@ const ColumnMappingResponseSchema = z.object({
   }),
   statedUnitCount: z.number().nullable().describe('Total unit count if stated in the document'),
   dataStartRow: z.number().describe('0-indexed row where actual unit data begins'),
+  dataEndRow: z.number().nullable().describe('0-indexed row where unit data ends (before summary sections). null if no summary section found'),
   skipPatterns: z.array(z.string()).describe('Text patterns that indicate non-unit rows (section headers, totals)'),
   notes: z.string().optional().describe('Any observations about the file format'),
 });
@@ -120,7 +121,7 @@ async function getColumnMappingFromAI(sheetText: string): Promise<ColumnMapping>
 
   const client = new Anthropic({ apiKey });
 
-  const prompt = `You are analyzing a rent roll Excel file to extract unit data. Below are the first rows of the spreadsheet.
+  const prompt = `You are analyzing a rent roll Excel file to extract unit data. Below are rows from the spreadsheet (first rows for headers, last rows for totals/summaries).
 
 Your task:
 1. Identify which row contains the column headers (may span multiple rows - pick the most complete one)
@@ -129,14 +130,21 @@ Your task:
    - status: Occupancy status (occupied, vacant, notice, etc.)
    - monthlyRent: The rent amount
    - tenantName: Tenant/resident name
-3. Find any stated total unit count (e.g., "Total Units: 156", "208 units", summary rows)
+3. Find any stated total unit count (e.g., "Total Units: 156", "208 units", "totals / averages:" row with a count)
 4. Identify the row where actual unit data starts (after headers)
-5. List text patterns that indicate rows to skip (section headers like "Current Residents", totals, subtotals)
+5. Identify the row where unit data ENDS - look for summary sections like "Unit Type Occupancy", "Total", "Summary", "Totals", etc. in the LAST ROWS section
+6. List text patterns that indicate rows to skip
+
+CRITICAL - DISTINGUISHING UNITS FROM SUMMARY DATA:
+- Real unit numbers are specific identifiers like "101", "111", "A-201", "6435-1E"
+- Summary sections may list UNIT TYPES (like "A1", "A2", "B1", "A3TH") which are NOT individual units
+- If you see a section with unit type codes (A1, A2, B1, etc.) paired with aggregate statistics (Occupied/Vacant counts, totals), this is a SUMMARY SECTION - set dataEndRow to the row BEFORE this section
+- The "Unit Type Occupancy" section is a common summary format - it lists unit types with their occupancy breakdown, NOT individual units
 
 IMPORTANT:
 - Column indices are 0-based (first column = 0)
-- "Unit Type" or "Unit Sqft" are NOT the unit number column
-- Look for the column that contains actual unit identifiers like "101", "A-201", "6435-1E"
+- "Unit Type" or "Unit Sqft" columns are NOT the unit number column
+- Look for the column that contains actual unit identifiers
 - The rent column should have dollar amounts, not codes
 - If a field isn't present, use null
 
@@ -155,6 +163,7 @@ Respond with ONLY valid JSON matching this structure:
   },
   "statedUnitCount": <number or null>,
   "dataStartRow": <0-indexed row where unit data begins>,
+  "dataEndRow": <0-indexed row where unit data ends, BEFORE any summary sections like "Unit Type Occupancy" or "Total". null if no summary section found>,
   "skipPatterns": ["pattern1", "pattern2"],
   "notes": "optional observations"
 }`;
@@ -212,13 +221,31 @@ function parseNumber(value: unknown): number | null {
 
 /**
  * Check if a row should be skipped based on patterns
+ * Only checks the first cell (unit number column) to avoid false positives
+ * from patterns appearing in tenant names or other columns
  */
-function shouldSkipRow(row: unknown[], skipPatterns: string[]): boolean {
-  const rowText = row.map(c => String(c ?? '').toLowerCase()).join(' ');
+function shouldSkipRow(row: unknown[], skipPatterns: string[], unitColIndex: number = 0): boolean {
+  // Check the unit number cell specifically
+  const unitCell = String(row[unitColIndex] ?? '').toLowerCase().trim();
+
+  // Also check first few cells for section headers
+  const firstCells = row.slice(0, 3).map(c => String(c ?? '').toLowerCase().trim()).join(' ');
 
   for (const pattern of skipPatterns) {
-    if (rowText.includes(pattern.toLowerCase())) {
-      return true;
+    const lowerPattern = pattern.toLowerCase();
+
+    // For multi-word patterns, check if first cells start with them
+    if (lowerPattern.includes(' ')) {
+      if (firstCells.startsWith(lowerPattern)) {
+        return true;
+      }
+    } else {
+      // For single-word patterns (like "total", "model"), require exact match
+      // or that the cell STARTS with the pattern (not just contains it)
+      // This prevents "713 - Model" from matching "model" pattern
+      if (unitCell === lowerPattern || unitCell.startsWith(lowerPattern + ' ') || firstCells.startsWith(lowerPattern)) {
+        return true;
+      }
     }
   }
 
@@ -281,17 +308,21 @@ export async function parseExcel(buffer: Buffer): Promise<{
     'subtotal',
     'grand total',
     'summary',
+    'unit type occupancy',
   ];
 
-  for (let r = mapping.dataStartRow; r <= range.e.r; r++) {
+  // Determine where to stop extraction (use dataEndRow if provided, otherwise end of sheet)
+  const endRow = mapping.dataEndRow !== null ? mapping.dataEndRow : range.e.r;
+
+  for (let r = mapping.dataStartRow; r <= endRow; r++) {
     const row: unknown[] = [];
     for (let c = range.s.c; c <= range.e.c; c++) {
       const cell = sheet[XLSX.utils.encode_cell({ r, c })];
       row.push(cell ? cell.v : null);
     }
 
-    // Skip rows matching patterns
-    if (shouldSkipRow(row, skipPatterns)) {
+    // Skip rows matching patterns (check unit column specifically)
+    if (shouldSkipRow(row, skipPatterns, mapping.columns.unitNumber ?? 0)) {
       continue;
     }
 
