@@ -43,6 +43,7 @@ const STATUS_MAPPINGS: Record<string, UnitStatus> = {
   'pending renewal': 'occupied',
   'vacant': 'vacant',
   'vacant unit': 'vacant',
+  'vacant-leased': 'vacant', // Vacant but has pending applicant - will be superseded by applicant row
   'v': 'vacant',
   'available': 'vacant',
   'ready': 'vacant',
@@ -60,6 +61,17 @@ const STATUS_MAPPINGS: Record<string, UnitStatus> = {
   'application': 'applicant',
   'pending': 'applicant',
   'approved': 'applicant',
+};
+
+// Priority for choosing between duplicate unit rows (higher = prefer)
+// When same unit appears multiple times, we keep the row with more useful info
+const STATUS_PRIORITY: Record<UnitStatus, number> = {
+  'occupied': 100,    // Highest - current tenant info
+  'notice': 90,       // Has tenant info + notice status
+  'applicant': 80,    // Has future tenant/rent info (prefer over vacant-leased)
+  'model': 50,        // Special unit
+  'down': 40,         // Special unit
+  'vacant': 10,       // Lowest - no tenant info
 };
 
 /**
@@ -333,26 +345,45 @@ export async function parseExcel(buffer: Buffer): Promise<{
     }
 
     const unitNumber = String(unitValue).trim();
+    const unitKey = unitNumber.toUpperCase();
 
-    // Skip duplicates (handles multi-row-per-unit formats)
-    if (seenUnits.has(unitNumber.toUpperCase())) {
-      continue;
-    }
-    seenUnits.add(unitNumber.toUpperCase());
+    // Build the unit object
+    const status = mapping.columns.status !== null
+      ? normalizeStatus(row[mapping.columns.status])
+      : 'occupied';
+    const monthlyRent = mapping.columns.monthlyRent !== null
+      ? parseNumber(row[mapping.columns.monthlyRent])
+      : null;
+    const tenantName = mapping.columns.tenantName !== null
+      ? row[mapping.columns.tenantName] ? String(row[mapping.columns.tenantName]).trim() : null
+      : null;
 
     const unit: MVPUnit = {
       unitNumber,
-      status: mapping.columns.status !== null
-        ? normalizeStatus(row[mapping.columns.status])
-        : 'occupied',
-      monthlyRent: mapping.columns.monthlyRent !== null
-        ? parseNumber(row[mapping.columns.monthlyRent])
-        : null,
-      tenantName: mapping.columns.tenantName !== null
-        ? row[mapping.columns.tenantName] ? String(row[mapping.columns.tenantName]).trim() : null
-        : null,
+      status,
+      monthlyRent,
+      tenantName,
       sourceRow: r + 1,
     };
+
+    // Handle duplicates: keep the row with higher priority status
+    // This handles cases like Vacant-Leased + Applicant (prefer Applicant)
+    if (seenUnits.has(unitKey)) {
+      const existingIndex = units.findIndex(u => u.unitNumber.toUpperCase() === unitKey);
+      if (existingIndex !== -1) {
+        const existing = units[existingIndex];
+        const existingPriority = STATUS_PRIORITY[existing.status] || 0;
+        const newPriority = STATUS_PRIORITY[status] || 0;
+
+        // Replace if new row has higher priority, or same priority but more data
+        if (newPriority > existingPriority ||
+            (newPriority === existingPriority && tenantName && !existing.tenantName)) {
+          units[existingIndex] = unit;
+        }
+      }
+      continue;
+    }
+    seenUnits.add(unitKey);
 
     units.push(unit);
   }

@@ -37,7 +37,8 @@ export function detectDuplicates(units: MVPUnit[]): ValidationIssue[] {
 
 /**
  * Detect gaps in sequential unit numbers
- * Only flags gaps in clearly sequential patterns (e.g., 101, 102, 104 - where's 103?)
+ * Only flags gaps when there's a clear sequential pattern (>80% consecutive)
+ * Many buildings intentionally skip numbers, so we're conservative here
  */
 export function detectGaps(units: MVPUnit[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -67,12 +68,21 @@ export function detectGaps(units: MVPUnit[]): ValidationIssue[] {
   }
 
   for (const [prefix, numbers] of byPrefix) {
-    if (numbers.length < 3) continue; // Need enough data to detect pattern
+    if (numbers.length < 10) continue; // Need enough data to detect a reliable pattern
 
     const sorted = [...new Set(numbers)].sort((a, b) => a - b);
+    const range = sorted[sorted.length - 1] - sorted[0] + 1;
+
+    // Only check for gaps if the numbers are mostly consecutive (>80% density)
+    // This avoids false positives for buildings with intentional gaps
+    const density = sorted.length / range;
+    if (density < 0.8) continue;
 
     // Check for simple gaps (consecutive numbers)
-    for (let i = 1; i < sorted.length; i++) {
+    let gapCount = 0;
+    const maxGaps = 3; // Limit warnings to avoid overwhelming the user
+
+    for (let i = 1; i < sorted.length && gapCount < maxGaps; i++) {
       const gap = sorted[i] - sorted[i - 1];
       // Flag gaps of 1 (missing single unit) - larger gaps may be intentional (different floors)
       if (gap === 2) {
@@ -80,11 +90,12 @@ export function detectGaps(units: MVPUnit[]): ValidationIssue[] {
         const missingUnit = prefix ? `${prefix}${missing}` : `${missing}`;
         issues.push({
           type: 'gap',
-          severity: 'warning',
+          severity: 'info', // Downgraded to info since gaps are often intentional
           message: `Possible missing unit: ${missingUnit} (between ${prefix}${sorted[i - 1]} and ${prefix}${sorted[i]})`,
           unitNumbers: [missingUnit],
           details: { before: sorted[i - 1], after: sorted[i], prefix },
         });
+        gapCount++;
       }
     }
   }
