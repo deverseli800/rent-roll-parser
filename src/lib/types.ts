@@ -1,0 +1,62 @@
+// MVP Types - Focused on unit count accuracy
+
+export type UnitStatus = 'occupied' | 'vacant' | 'notice' | 'model' | 'down' | 'applicant';
+
+export interface MVPUnit {
+  unitNumber: string;
+  status: UnitStatus;
+  monthlyRent: number | null;
+  tenantName: string | null;
+  // Metadata for validation
+  sourceRow?: number;
+  sourcePage?: number;
+}
+
+export interface ValidationIssue {
+  type: 'duplicate' | 'gap' | 'count_mismatch' | 'missing_unit_number' | 'suspicious';
+  severity: 'critical' | 'warning' | 'info';
+  message: string;
+  unitNumbers?: string[];
+  details?: Record<string, unknown>;
+}
+
+export interface RentRollExtraction {
+  id: string;
+  fileName: string;
+  propertyName: string | null;
+  uploadedAt: string;
+  processedAt: string | null;
+  status: 'processing' | 'review' | 'approved' | 'error';
+
+  // Unit data
+  units: MVPUnit[];
+
+  // Count validation (critical for MVP)
+  statedUnitCount: number | null;  // From document if found
+  extractedUnitCount: number;
+  countMatch: boolean | null;  // null if stated count not found
+
+  // Validation results
+  validationIssues: ValidationIssue[];
+
+  // Extraction metadata
+  sourceType: 'excel' | 'pdf';
+  sourceFormat: string | null;  // 'onesite' | 'resman' | 'simple' | 'unknown'
+  processingTimeMs: number | null;
+  pageCount: number | null;
+
+  // Error info if failed
+  error: string | null;
+}
+
+export interface ExtractionSummary {
+  id: string;
+  fileName: string;
+  propertyName: string | null;
+  status: RentRollExtraction['status'];
+  extractedUnitCount: number;
+  statedUnitCount: number | null;
+  countMatch: boolean | null;
+  criticalIssues: number;
+  uploadedAt: string;
+}
