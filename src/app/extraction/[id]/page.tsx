@@ -1,0 +1,443 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import {
+  Container,
+  Title,
+  Stack,
+  Paper,
+  Text,
+  Group,
+  Button,
+  Table,
+  Badge,
+  ActionIcon,
+  TextInput,
+  Select,
+  NumberInput,
+  Modal,
+  Alert,
+  Loader,
+  Card,
+  SimpleGrid,
+} from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import {
+  IconArrowLeft,
+  IconDownload,
+  IconCheck,
+  IconPlus,
+  IconTrash,
+  IconAlertTriangle,
+  IconCircleCheck,
+} from '@tabler/icons-react';
+import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue } from '@/lib/types';
+
+const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
+  { value: 'occupied', label: 'Occupied' },
+  { value: 'vacant', label: 'Vacant' },
+  { value: 'notice', label: 'Notice' },
+  { value: 'model', label: 'Model' },
+  { value: 'down', label: 'Down' },
+  { value: 'applicant', label: 'Applicant' },
+];
+
+function ValidationIssuesList({ issues }: { issues: ValidationIssue[] }) {
+  if (issues.length === 0) {
+    return (
+      <Alert icon={<IconCircleCheck size={16} />} color="green" variant="light">
+        No validation issues found
+      </Alert>
+    );
+  }
+
+  return (
+    <Stack gap="xs">
+      {issues.map((issue, index) => (
+        <Alert
+          key={index}
+          icon={<IconAlertTriangle size={16} />}
+          color={issue.severity === 'critical' ? 'red' : issue.severity === 'warning' ? 'yellow' : 'blue'}
+          variant="light"
+          title={issue.type.replace('_', ' ').toUpperCase()}
+        >
+          {issue.message}
+        </Alert>
+      ))}
+    </Stack>
+  );
+}
+
+function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
+  const getCountStatus = () => {
+    if (extraction.countMatch === true) {
+      return { color: 'green', icon: <IconCircleCheck size={20} />, text: 'Verified' };
+    }
+    if (extraction.countMatch === false) {
+      return { color: 'red', icon: <IconAlertTriangle size={20} />, text: 'Mismatch!' };
+    }
+    return { color: 'yellow', icon: <IconAlertTriangle size={20} />, text: 'Unverified' };
+  };
+
+  const status = getCountStatus();
+
+  return (
+    <Card withBorder p="md">
+      <Group justify="space-between">
+        <div>
+          <Text size="sm" c="dimmed">Extracted Units</Text>
+          <Text size="xl" fw={700}>{extraction.extractedUnitCount}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Stated in Document</Text>
+          <Text size="xl" fw={700}>
+            {extraction.statedUnitCount ?? '—'}
+          </Text>
+        </div>
+        <div>
+          <Badge size="lg" color={status.color} leftSection={status.icon}>
+            {status.text}
+          </Badge>
+        </div>
+      </Group>
+    </Card>
+  );
+}
+
+export default function ExtractionPage() {
+  const params = useParams();
+  const router = useRouter();
+  const id = params.id as string;
+
+  const [extraction, setExtraction] = useState<RentRollExtraction | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [units, setUnits] = useState<MVPUnit[]>([]);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [newUnit, setNewUnit] = useState<Partial<MVPUnit>>({
+    unitNumber: '',
+    status: 'vacant',
+    monthlyRent: null,
+    tenantName: null,
+  });
+
+  const fetchExtraction = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/extraction/${id}`);
+      if (response.ok) {
+        const data = await response.json();
+        setExtraction(data);
+        setUnits(data.units);
+      } else {
+        notifications.show({
+          title: 'Error',
+          message: 'Extraction not found',
+          color: 'red',
+        });
+        router.push('/');
+      }
+    } catch (error) {
+      console.error('Error fetching extraction:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [id, router]);
+
+  useEffect(() => {
+    fetchExtraction();
+  }, [fetchExtraction]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/extraction/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ units }),
+      });
+
+      if (response.ok) {
+        const updated = await response.json();
+        setExtraction(updated);
+        notifications.show({
+          title: 'Saved',
+          message: 'Changes saved successfully',
+          color: 'green',
+        });
+      }
+    } catch (error) {
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to save changes',
+        color: 'red',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/extraction/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ units, status: 'approved' }),
+      });
+
+      if (response.ok) {
+        const updated = await response.json();
+        setExtraction(updated);
+        notifications.show({
+          title: 'Approved',
+          message: 'Extraction approved successfully',
+          color: 'green',
+        });
+      }
+    } catch (error) {
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to approve extraction',
+        color: 'red',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleExport = () => {
+    if (!extraction) return;
+
+    const exportData = {
+      ...extraction,
+      units,
+      exportedAt: new Date().toISOString(),
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${extraction.fileName.replace(/\.[^/.]+$/, '')}_extracted.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleUnitChange = (index: number, field: keyof MVPUnit, value: unknown) => {
+    const newUnits = [...units];
+    newUnits[index] = { ...newUnits[index], [field]: value };
+    setUnits(newUnits);
+  };
+
+  const handleDeleteUnit = (index: number) => {
+    const newUnits = units.filter((_, i) => i !== index);
+    setUnits(newUnits);
+  };
+
+  const handleAddUnit = () => {
+    if (!newUnit.unitNumber) {
+      notifications.show({
+        title: 'Error',
+        message: 'Unit number is required',
+        color: 'red',
+      });
+      return;
+    }
+
+    setUnits([...units, newUnit as MVPUnit]);
+    setNewUnit({
+      unitNumber: '',
+      status: 'vacant',
+      monthlyRent: null,
+      tenantName: null,
+    });
+    setAddModalOpen(false);
+  };
+
+  if (loading) {
+    return (
+      <Container size="xl" py="xl">
+        <Group justify="center" py="xl">
+          <Loader size="lg" />
+        </Group>
+      </Container>
+    );
+  }
+
+  if (!extraction) {
+    return (
+      <Container size="xl" py="xl">
+        <Text>Extraction not found</Text>
+      </Container>
+    );
+  }
+
+  return (
+    <Container size="xl" py="xl">
+      <Stack gap="lg">
+        {/* Header */}
+        <Group justify="space-between">
+          <Group>
+            <ActionIcon variant="subtle" onClick={() => router.push('/')}>
+              <IconArrowLeft size={20} />
+            </ActionIcon>
+            <div>
+              <Title order={2}>{extraction.fileName}</Title>
+              <Text c="dimmed" size="sm">
+                {extraction.propertyName || 'Unknown Property'} • {extraction.sourceType.toUpperCase()} • {extraction.sourceFormat || 'Unknown format'}
+              </Text>
+            </div>
+          </Group>
+          <Group>
+            <Button
+              variant="outline"
+              leftSection={<IconDownload size={16} />}
+              onClick={handleExport}
+            >
+              Export JSON
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleSave}
+              loading={saving}
+            >
+              Save Changes
+            </Button>
+            <Button
+              color="green"
+              leftSection={<IconCheck size={16} />}
+              onClick={handleApprove}
+              loading={saving}
+              disabled={extraction.status === 'approved'}
+            >
+              {extraction.status === 'approved' ? 'Approved' : 'Approve'}
+            </Button>
+          </Group>
+        </Group>
+
+        {/* Unit Count Card */}
+        <UnitCountCard extraction={{ ...extraction, extractedUnitCount: units.length }} />
+
+        {/* Validation Issues */}
+        <Paper withBorder p="md">
+          <Title order={4} mb="md">Validation Issues</Title>
+          <ValidationIssuesList issues={extraction.validationIssues} />
+        </Paper>
+
+        {/* Units Table */}
+        <Paper withBorder p="md">
+          <Group justify="space-between" mb="md">
+            <Title order={4}>Units ({units.length})</Title>
+            <Button
+              size="sm"
+              leftSection={<IconPlus size={16} />}
+              onClick={() => setAddModalOpen(true)}
+            >
+              Add Unit
+            </Button>
+          </Group>
+
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Unit #</Table.Th>
+                <Table.Th>Status</Table.Th>
+                <Table.Th>Monthly Rent</Table.Th>
+                <Table.Th>Tenant Name</Table.Th>
+                <Table.Th w={60}>Actions</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {units.map((unit, index) => (
+                <Table.Tr key={index}>
+                  <Table.Td>
+                    <TextInput
+                      size="xs"
+                      value={unit.unitNumber}
+                      onChange={(e) => handleUnitChange(index, 'unitNumber', e.target.value)}
+                      styles={{ input: { width: 100 } }}
+                    />
+                  </Table.Td>
+                  <Table.Td>
+                    <Select
+                      size="xs"
+                      value={unit.status}
+                      data={STATUS_OPTIONS}
+                      onChange={(value) => handleUnitChange(index, 'status', value)}
+                      styles={{ input: { width: 120 } }}
+                    />
+                  </Table.Td>
+                  <Table.Td>
+                    <NumberInput
+                      size="xs"
+                      value={unit.monthlyRent ?? ''}
+                      onChange={(value) => handleUnitChange(index, 'monthlyRent', value || null)}
+                      prefix="$"
+                      thousandSeparator=","
+                      styles={{ input: { width: 120 } }}
+                    />
+                  </Table.Td>
+                  <Table.Td>
+                    <TextInput
+                      size="xs"
+                      value={unit.tenantName ?? ''}
+                      onChange={(e) => handleUnitChange(index, 'tenantName', e.target.value || null)}
+                      placeholder="—"
+                    />
+                  </Table.Td>
+                  <Table.Td>
+                    <ActionIcon
+                      color="red"
+                      variant="subtle"
+                      onClick={() => handleDeleteUnit(index)}
+                    >
+                      <IconTrash size={16} />
+                    </ActionIcon>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Paper>
+      </Stack>
+
+      {/* Add Unit Modal */}
+      <Modal
+        opened={addModalOpen}
+        onClose={() => setAddModalOpen(false)}
+        title="Add Unit"
+      >
+        <Stack>
+          <TextInput
+            label="Unit Number"
+            required
+            value={newUnit.unitNumber}
+            onChange={(e) => setNewUnit({ ...newUnit, unitNumber: e.target.value })}
+          />
+          <Select
+            label="Status"
+            value={newUnit.status}
+            data={STATUS_OPTIONS}
+            onChange={(value) => setNewUnit({ ...newUnit, status: value as UnitStatus })}
+          />
+          <NumberInput
+            label="Monthly Rent"
+            value={newUnit.monthlyRent ?? ''}
+            onChange={(value) => setNewUnit({ ...newUnit, monthlyRent: value as number || null })}
+            prefix="$"
+            thousandSeparator=","
+          />
+          <TextInput
+            label="Tenant Name"
+            value={newUnit.tenantName ?? ''}
+            onChange={(e) => setNewUnit({ ...newUnit, tenantName: e.target.value || null })}
+          />
+          <Button onClick={handleAddUnit}>Add Unit</Button>
+        </Stack>
+      </Modal>
+    </Container>
+  );
+}
