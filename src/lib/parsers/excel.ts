@@ -214,7 +214,7 @@ Respond with ONLY valid JSON matching this structure:
 }`;
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250514',
+    model: 'claude-sonnet-4-5-20250929',
     max_tokens: 1000,
     messages: [
       {
