@@ -130,10 +130,17 @@ function sheetToText(sheet: XLSX.WorkSheet, firstRows: number = 35, lastRows: nu
   return lines.join('\n');
 }
 
+interface AIResponse {
+  mapping: ColumnMapping;
+  modelUsed: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 /**
  * Use Claude to analyze the Excel structure and map columns
  */
-async function getColumnMappingFromAI(sheetText: string): Promise<ColumnMapping> {
+async function getColumnMappingFromAI(sheetText: string): Promise<AIResponse> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY environment variable is not set');
@@ -229,7 +236,12 @@ Respond with ONLY valid JSON matching this structure:
   }
 
   const parsed = JSON.parse(jsonMatch[0]);
-  return ColumnMappingResponseSchema.parse(parsed);
+  return {
+    mapping: ColumnMappingResponseSchema.parse(parsed),
+    modelUsed: response.model,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  };
 }
 
 /**
@@ -368,6 +380,9 @@ export async function parseExcel(buffer: Buffer): Promise<{
   units: MVPUnit[];
   statedUnitCount: number | null;
   format: string;
+  modelUsed: string;
+  inputTokens: number;
+  outputTokens: number;
 }> {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
@@ -377,7 +392,8 @@ export async function parseExcel(buffer: Buffer): Promise<{
   const sheetText = sheetToText(sheet, 35);
 
   // Get column mapping from AI
-  const mapping = await getColumnMappingFromAI(sheetText);
+  const aiResponse = await getColumnMappingFromAI(sheetText);
+  const mapping = aiResponse.mapping;
 
   if (mapping.columns.unitNumber === null) {
     throw new Error('AI could not identify the unit number column');
@@ -497,5 +513,8 @@ export async function parseExcel(buffer: Buffer): Promise<{
     units,
     statedUnitCount: mapping.statedUnitCount,
     format: `ai-mapped (header row ${mapping.headerRow})`,
+    modelUsed: aiResponse.modelUsed,
+    inputTokens: aiResponse.inputTokens,
+    outputTokens: aiResponse.outputTokens,
   };
 }

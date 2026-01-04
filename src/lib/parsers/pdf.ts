@@ -110,6 +110,9 @@ export async function parsePDF(buffer: Buffer): Promise<{
   propertyName: string | null;
   format: string;
   pageCount: number | null;
+  modelUsed: string;
+  inputTokens: number;
+  outputTokens: number;
 }> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -206,6 +209,9 @@ export async function parsePDF(buffer: Buffer): Promise<{
       propertyName: validated.propertyName ?? null,
       format,
       pageCount: null,
+      modelUsed: response.model,
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
     };
   } catch (error) {
     // If Claude Sonnet 4 fails, try with Opus 4.5
@@ -276,6 +282,9 @@ export async function parsePDF(buffer: Buffer): Promise<{
         propertyName: validated.propertyName ?? null,
         format: 'unknown',
         pageCount: null,
+        modelUsed: response.model,
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
       };
     }
 

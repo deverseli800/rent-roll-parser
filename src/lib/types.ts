@@ -76,6 +76,12 @@ export interface RentRollExtraction {
   processingTimeMs: number | null;
   pageCount: number | null;
 
+  // AI usage tracking
+  modelUsed: string | null;           // e.g., 'claude-sonnet-4-20250514'
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+
   // Error info if failed
   error: string | null;
 }
@@ -92,4 +98,7 @@ export interface ExtractionSummary {
   uploadedAt: string;
   processingTimeMs: number | null;
   error: string | null;
+  // AI usage tracking
+  modelUsed: string | null;
+  totalTokens: number | null;
 }

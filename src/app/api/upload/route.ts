@@ -55,6 +55,10 @@ export async function POST(request: NextRequest) {
       sourceFormat: null,
       processingTimeMs: null,
       pageCount: null,
+      modelUsed: null,
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
       error: null,
     };
 
@@ -83,6 +87,11 @@ export async function POST(request: NextRequest) {
       extraction.processedAt = new Date().toISOString();
       extraction.processingTimeMs = Date.now() - startTime;
       extraction.status = issues.some(i => i.severity === 'critical') ? 'review' : 'review';
+      // AI usage tracking
+      extraction.modelUsed = result.modelUsed;
+      extraction.inputTokens = result.inputTokens;
+      extraction.outputTokens = result.outputTokens;
+      extraction.totalTokens = result.inputTokens + result.outputTokens;
 
       await saveExtraction(extraction);
 

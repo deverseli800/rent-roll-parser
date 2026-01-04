@@ -69,6 +69,19 @@ function ValidationIssuesList({ issues }: { issues: ValidationIssue[] }) {
   );
 }
 
+function formatModelName(model: string | null): string {
+  if (!model) return '—';
+  if (model.includes('opus')) return 'Opus 4.5';
+  if (model.includes('sonnet')) return 'Sonnet 4';
+  return model;
+}
+
+function formatTokens(tokens: number | null): string {
+  if (tokens === null) return '—';
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
+  return String(tokens);
+}
+
 function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
   const getCountStatus = () => {
     if (extraction.countMatch === true) {
@@ -99,6 +112,14 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
           <Badge size="lg" color={status.color} leftSection={status.icon}>
             {status.text}
           </Badge>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Model</Text>
+          <Text size="lg" fw={600}>{formatModelName(extraction.modelUsed)}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Tokens</Text>
+          <Text size="lg" fw={600}>{formatTokens(extraction.totalTokens)}</Text>
         </div>
       </Group>
     </Card>
