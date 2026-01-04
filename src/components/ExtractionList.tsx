@@ -32,6 +32,7 @@ function formatModelName(model: string | null): string {
   if (!model) return '—';
   // Shorten model names for display
   if (model.includes('opus')) return 'Opus 4.5';
+  if (model.includes('sonnet-4-5')) return 'Sonnet 4.5';
   if (model.includes('sonnet')) return 'Sonnet 4';
   return model;
 }
