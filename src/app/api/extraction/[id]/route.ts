@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getExtraction, updateExtraction, deleteExtraction } from '@/lib/storage';
 import { validateExtraction } from '@/lib/validation/validators';
+import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import type { MVPUnit } from '@/lib/types';
 
 interface RouteParams {
@@ -65,6 +66,8 @@ export async function PUT(
         ? units.length === extraction.statedUnitCount
         : null;
       updates.validationIssues = issues;
+      // Recalculate summary stats
+      updates.summaryStats = calculateSummaryStats(units);
     }
 
     if (status) {
