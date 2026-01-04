@@ -129,7 +129,7 @@ export async function parsePDF(buffer: Buffer): Promise<{
   try {
     const response = await client.messages.create(
       {
-        model: 'claude-sonnet-4-5-20250514',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 64000,
         messages: [
           {
