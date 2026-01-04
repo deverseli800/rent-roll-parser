@@ -213,7 +213,7 @@ export default function ExtractionPage() {
     }
   };
 
-  const handleExport = () => {
+  const handleExportJSON = () => {
     if (!extraction) return;
 
     const exportData = {
@@ -231,6 +231,12 @@ export default function ExtractionPage() {
     a.download = `${extraction.fileName.replace(/\.[^/.]+$/, '')}_extracted.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportExcel = () => {
+    if (!extraction) return;
+    // Trigger download via the API route
+    window.location.href = `/api/extraction/${id}/export`;
   };
 
   const handleUnitChange = (index: number, field: keyof MVPUnit, value: unknown) => {
@@ -309,7 +315,14 @@ export default function ExtractionPage() {
             <Button
               variant="outline"
               leftSection={<IconDownload size={16} />}
-              onClick={handleExport}
+              onClick={handleExportExcel}
+            >
+              Export Excel
+            </Button>
+            <Button
+              variant="outline"
+              leftSection={<IconDownload size={16} />}
+              onClick={handleExportJSON}
             >
               Export JSON
             </Button>
