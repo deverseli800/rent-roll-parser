@@ -9,6 +9,10 @@ export interface ParseResult {
   sourceType: 'excel' | 'pdf';
   sourceFormat: string;
   pageCount: number | null;
+  // AI usage tracking
+  modelUsed: string;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /**
@@ -29,6 +33,9 @@ export async function parseRentRoll(
       sourceType: 'excel',
       sourceFormat: result.format,
       pageCount: null,
+      modelUsed: result.modelUsed,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
     };
   }
 
@@ -41,6 +48,9 @@ export async function parseRentRoll(
       sourceType: 'pdf',
       sourceFormat: result.format,
       pageCount: result.pageCount,
+      modelUsed: result.modelUsed,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
     };
   }
 

@@ -78,6 +78,8 @@ export async function listExtractions(): Promise<ExtractionSummary[]> {
           uploadedAt: extraction.uploadedAt,
           processingTimeMs: extraction.processingTimeMs,
           error: extraction.error,
+          modelUsed: extraction.modelUsed ?? null,
+          totalTokens: extraction.totalTokens ?? null,
         });
       } catch {
         // Skip invalid files

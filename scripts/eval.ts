@@ -43,6 +43,8 @@ async function runEval() {
     statedCount: number | null;
     criticalIssues: number;
     processingTimeMs: number;
+    modelUsed: string;
+    totalTokens: number;
     error?: string;
   }> = [];
 
@@ -66,6 +68,10 @@ async function runEval() {
       const expectedCount = EXPECTED_COUNTS[file];
       const matchesExpected = expectedCount !== null ? result.units.length === expectedCount : null;
 
+      const totalTokens = result.inputTokens + result.outputTokens;
+      const modelShort = result.modelUsed.includes('opus') ? 'Opus 4.5' :
+                         result.modelUsed.includes('sonnet') ? 'Sonnet 4' : result.modelUsed;
+
       console.log(`  ✓ Extracted ${result.units.length} units`);
       console.log(`  ✓ Stated count in doc: ${result.statedUnitCount ?? 'N/A'}`);
       console.log(`  ✓ Count match (stated): ${result.statedUnitCount !== null ? (result.units.length === result.statedUnitCount ? '✓ YES' : '✗ NO') : 'N/A'}`);
@@ -73,6 +79,8 @@ async function runEval() {
         console.log(`  ✓ Expected count: ${expectedCount} ${matchesExpected ? '✓ MATCH' : '✗ MISMATCH'}`);
       }
       console.log(`  ✓ Critical issues: ${criticalIssues}`);
+      console.log(`  ✓ Model: ${modelShort}`);
+      console.log(`  ✓ Tokens: ${totalTokens.toLocaleString()} (in: ${result.inputTokens.toLocaleString()}, out: ${result.outputTokens.toLocaleString()})`);
       console.log(`  ✓ Processing time: ${processingTimeMs}ms`);
 
       // Show summary stats
@@ -90,6 +98,8 @@ async function runEval() {
         statedCount: result.statedUnitCount,
         criticalIssues,
         processingTimeMs,
+        modelUsed: modelShort,
+        totalTokens,
       });
 
     } catch (error) {
@@ -106,6 +116,8 @@ async function runEval() {
         statedCount: null,
         criticalIssues: 0,
         processingTimeMs,
+        modelUsed: '—',
+        totalTokens: 0,
         error: errorMessage,
       });
     }
@@ -127,19 +139,27 @@ async function runEval() {
   console.log(`Matched expected count: ${matchedExpected.length}`);
   console.log(`Mismatched expected count: ${mismatchedExpected.length}`);
 
+  // Calculate total tokens used
+  const totalTokensUsed = results.reduce((sum, r) => sum + r.totalTokens, 0);
+  console.log(`\nTotal tokens used: ${totalTokensUsed.toLocaleString()}`);
+
   console.log('\n--- Results Table ---\n');
-  console.log('File'.padEnd(45) + 'Units'.padStart(8) + 'Expected'.padStart(10) + 'Match'.padStart(8) + 'Time(ms)'.padStart(10));
-  console.log('-'.repeat(81));
+  console.log('File'.padEnd(40) + 'Units'.padStart(7) + 'Match'.padStart(7) + 'Model'.padStart(12) + 'Tokens'.padStart(10) + 'Time'.padStart(10));
+  console.log('-'.repeat(86));
 
   for (const r of results) {
     const matchStr = r.countMatch === true ? '✓' : r.countMatch === false ? '✗' : '-';
-    const expectedStr = r.expectedCount !== null ? String(r.expectedCount) : '-';
+    const tokensStr = r.totalTokens > 0 ? `${(r.totalTokens / 1000).toFixed(1)}k` : '-';
+    const timeStr = r.processingTimeMs < 1000 ? `${r.processingTimeMs}ms` :
+                    r.processingTimeMs < 60000 ? `${(r.processingTimeMs / 1000).toFixed(1)}s` :
+                    `${(r.processingTimeMs / 60000).toFixed(1)}m`;
     console.log(
-      r.file.substring(0, 44).padEnd(45) +
-      String(r.unitCount).padStart(8) +
-      expectedStr.padStart(10) +
-      matchStr.padStart(8) +
-      String(r.processingTimeMs).padStart(10)
+      r.file.substring(0, 39).padEnd(40) +
+      String(r.unitCount).padStart(7) +
+      matchStr.padStart(7) +
+      r.modelUsed.padStart(12) +
+      tokensStr.padStart(10) +
+      timeStr.padStart(10)
     );
   }
 

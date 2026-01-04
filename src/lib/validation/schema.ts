@@ -76,6 +76,12 @@ export const RentRollExtractionSchema = z.object({
   processingTimeMs: z.number().nullable(),
   pageCount: z.number().nullable(),
 
+  // AI usage tracking
+  modelUsed: z.string().nullable(),
+  inputTokens: z.number().nullable(),
+  outputTokens: z.number().nullable(),
+  totalTokens: z.number().nullable(),
+
   error: z.string().nullable(),
 });
 

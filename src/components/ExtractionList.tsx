@@ -28,6 +28,20 @@ function formatProcessingTime(ms: number | null): string {
   return `${(ms / 60000).toFixed(1)}m`;
 }
 
+function formatModelName(model: string | null): string {
+  if (!model) return '—';
+  // Shorten model names for display
+  if (model.includes('opus')) return 'Opus 4.5';
+  if (model.includes('sonnet')) return 'Sonnet 4';
+  return model;
+}
+
+function formatTokens(tokens: number | null): string {
+  if (tokens === null) return '—';
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
+  return String(tokens);
+}
+
 function getCountBadge(extraction: ExtractionSummary) {
   if (extraction.countMatch === true) {
     return (
@@ -72,6 +86,8 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
           <Table.Th>Units</Table.Th>
           <Table.Th>Issues</Table.Th>
           <Table.Th>Status</Table.Th>
+          <Table.Th>Model</Table.Th>
+          <Table.Th>Tokens</Table.Th>
           <Table.Th>Time</Table.Th>
           <Table.Th>Uploaded</Table.Th>
           <Table.Th>Actions</Table.Th>
@@ -106,6 +122,16 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
               ) : (
                 getStatusBadge(extraction.status)
               )}
+            </Table.Td>
+            <Table.Td>
+              <Text size="sm" c="dimmed">
+                {formatModelName(extraction.modelUsed)}
+              </Text>
+            </Table.Td>
+            <Table.Td>
+              <Text size="sm" c="dimmed">
+                {formatTokens(extraction.totalTokens)}
+              </Text>
             </Table.Td>
             <Table.Td>
               <Text size="sm" c="dimmed">
