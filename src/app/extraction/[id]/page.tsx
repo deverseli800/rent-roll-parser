@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Container,
@@ -126,6 +126,119 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
     </Card>
   );
 }
+
+// Memoized row component to prevent re-rendering all rows on single cell change
+interface UnitRowProps {
+  unit: MVPUnit;
+  index: number;
+  onUnitChange: (index: number, field: keyof MVPUnit, value: unknown) => void;
+  onDeleteUnit: (index: number) => void;
+}
+
+const UnitRow = memo(function UnitRow({ unit, index, onUnitChange, onDeleteUnit }: UnitRowProps) {
+  return (
+    <Table.Tr>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.unitNumber}
+          onChange={(e) => onUnitChange(index, 'unitNumber', e.target.value)}
+          styles={{ input: { width: 80 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <Select
+          size="xs"
+          value={unit.status}
+          data={STATUS_OPTIONS}
+          onChange={(value) => onUnitChange(index, 'status', value)}
+          styles={{ input: { width: 100 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.unitType ?? ''}
+          onChange={(e) => onUnitChange(index, 'unitType', e.target.value || null)}
+          placeholder="—"
+          styles={{ input: { width: 80 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <NumberInput
+          size="xs"
+          value={unit.unitSqft ?? ''}
+          onChange={(value) => onUnitChange(index, 'unitSqft', value || null)}
+          styles={{ input: { width: 70 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <NumberInput
+          size="xs"
+          value={unit.monthlyRent ?? ''}
+          onChange={(value) => onUnitChange(index, 'monthlyRent', value || null)}
+          prefix="$"
+          thousandSeparator=","
+          styles={{ input: { width: 100 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.tenantName ?? ''}
+          onChange={(e) => onUnitChange(index, 'tenantName', e.target.value || null)}
+          placeholder="—"
+          styles={{ input: { width: 150 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.moveInDate ?? ''}
+          onChange={(e) => onUnitChange(index, 'moveInDate', e.target.value || null)}
+          placeholder="—"
+          styles={{ input: { width: 100 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.moveOutDate ?? ''}
+          onChange={(e) => onUnitChange(index, 'moveOutDate', e.target.value || null)}
+          placeholder="—"
+          styles={{ input: { width: 100 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.leaseStartDate ?? ''}
+          onChange={(e) => onUnitChange(index, 'leaseStartDate', e.target.value || null)}
+          placeholder="—"
+          styles={{ input: { width: 100 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <TextInput
+          size="xs"
+          value={unit.leaseEndDate ?? ''}
+          onChange={(e) => onUnitChange(index, 'leaseEndDate', e.target.value || null)}
+          placeholder="—"
+          styles={{ input: { width: 100 } }}
+        />
+      </Table.Td>
+      <Table.Td>
+        <ActionIcon
+          color="red"
+          variant="subtle"
+          onClick={() => onDeleteUnit(index)}
+        >
+          <IconTrash size={16} />
+        </ActionIcon>
+      </Table.Td>
+    </Table.Tr>
+  );
+});
 
 function SummaryStatsCard({ stats }: { stats: SummaryStats | null }) {
   if (!stats) {
@@ -347,16 +460,17 @@ export default function ExtractionPage() {
     window.location.href = `/api/extraction/${id}/export`;
   };
 
-  const handleUnitChange = (index: number, field: keyof MVPUnit, value: unknown) => {
-    const newUnits = [...units];
-    newUnits[index] = { ...newUnits[index], [field]: value };
-    setUnits(newUnits);
-  };
+  const handleUnitChange = useCallback((index: number, field: keyof MVPUnit, value: unknown) => {
+    setUnits(prevUnits => {
+      const newUnits = [...prevUnits];
+      newUnits[index] = { ...newUnits[index], [field]: value };
+      return newUnits;
+    });
+  }, []);
 
-  const handleDeleteUnit = (index: number) => {
-    const newUnits = units.filter((_, i) => i !== index);
-    setUnits(newUnits);
-  };
+  const handleDeleteUnit = useCallback((index: number) => {
+    setUnits(prevUnits => prevUnits.filter((_, i) => i !== index));
+  }, []);
 
   const handleAddUnit = () => {
     if (!newUnit.unitNumber) {
@@ -497,106 +611,13 @@ export default function ExtractionPage() {
               </Table.Thead>
               <Table.Tbody>
                 {units.map((unit, index) => (
-                  <Table.Tr key={index}>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.unitNumber}
-                        onChange={(e) => handleUnitChange(index, 'unitNumber', e.target.value)}
-                        styles={{ input: { width: 80 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <Select
-                        size="xs"
-                        value={unit.status}
-                        data={STATUS_OPTIONS}
-                        onChange={(value) => handleUnitChange(index, 'status', value)}
-                        styles={{ input: { width: 100 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.unitType ?? ''}
-                        onChange={(e) => handleUnitChange(index, 'unitType', e.target.value || null)}
-                        placeholder="—"
-                        styles={{ input: { width: 80 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <NumberInput
-                        size="xs"
-                        value={unit.unitSqft ?? ''}
-                        onChange={(value) => handleUnitChange(index, 'unitSqft', value || null)}
-                        styles={{ input: { width: 70 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <NumberInput
-                        size="xs"
-                        value={unit.monthlyRent ?? ''}
-                        onChange={(value) => handleUnitChange(index, 'monthlyRent', value || null)}
-                        prefix="$"
-                        thousandSeparator=","
-                        styles={{ input: { width: 100 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.tenantName ?? ''}
-                        onChange={(e) => handleUnitChange(index, 'tenantName', e.target.value || null)}
-                        placeholder="—"
-                        styles={{ input: { width: 150 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.moveInDate ?? ''}
-                        onChange={(e) => handleUnitChange(index, 'moveInDate', e.target.value || null)}
-                        placeholder="—"
-                        styles={{ input: { width: 100 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.moveOutDate ?? ''}
-                        onChange={(e) => handleUnitChange(index, 'moveOutDate', e.target.value || null)}
-                        placeholder="—"
-                        styles={{ input: { width: 100 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.leaseStartDate ?? ''}
-                        onChange={(e) => handleUnitChange(index, 'leaseStartDate', e.target.value || null)}
-                        placeholder="—"
-                        styles={{ input: { width: 100 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <TextInput
-                        size="xs"
-                        value={unit.leaseEndDate ?? ''}
-                        onChange={(e) => handleUnitChange(index, 'leaseEndDate', e.target.value || null)}
-                        placeholder="—"
-                        styles={{ input: { width: 100 } }}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <ActionIcon
-                        color="red"
-                        variant="subtle"
-                        onClick={() => handleDeleteUnit(index)}
-                      >
-                        <IconTrash size={16} />
-                      </ActionIcon>
-                    </Table.Td>
-                  </Table.Tr>
+                  <UnitRow
+                    key={unit.unitNumber + '-' + index}
+                    unit={unit}
+                    index={index}
+                    onUnitChange={handleUnitChange}
+                    onDeleteUnit={handleDeleteUnit}
+                  />
                 ))}
               </Table.Tbody>
             </Table>
