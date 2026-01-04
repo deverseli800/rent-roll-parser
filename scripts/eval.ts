@@ -70,6 +70,7 @@ async function runEval() {
 
       const totalTokens = result.inputTokens + result.outputTokens;
       const modelShort = result.modelUsed.includes('opus') ? 'Opus 4.5' :
+                         result.modelUsed.includes('sonnet-4-5') ? 'Sonnet 4.5' :
                          result.modelUsed.includes('sonnet') ? 'Sonnet 4' : result.modelUsed;
 
       console.log(`  ✓ Extracted ${result.units.length} units`);
