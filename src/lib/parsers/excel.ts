@@ -21,6 +21,14 @@ const ColumnMappingResponseSchema = z.object({
     status: z.number().nullable().describe('Column index for occupancy status'),
     monthlyRent: z.number().nullable().describe('Column index for rent amount'),
     tenantName: z.number().nullable().describe('Column index for tenant/resident name'),
+    // Additional fields
+    unitSqft: z.number().nullable().describe('Column index for unit square footage'),
+    unitType: z.number().nullable().describe('Column index for unit type (e.g., 1BR/1BA, Studio)'),
+    leaseStatus: z.number().nullable().describe('Column index for raw lease status text'),
+    moveInDate: z.number().nullable().describe('Column index for move-in date'),
+    moveOutDate: z.number().nullable().describe('Column index for move-out date'),
+    leaseStartDate: z.number().nullable().describe('Column index for lease start date'),
+    leaseEndDate: z.number().nullable().describe('Column index for lease end date'),
   }),
   statedUnitCount: z.number().nullable().describe('Total unit count if stated in the document'),
   dataStartRow: z.number().describe('0-indexed row where actual unit data begins'),
@@ -137,11 +145,22 @@ async function getColumnMappingFromAI(sheetText: string): Promise<ColumnMapping>
 
 Your task:
 1. Identify which row contains the column headers (may span multiple rows - pick the most complete one)
-2. Map the columns to these fields:
+2. Map the columns to these fields (use null if not found):
+   PRIMARY FIELDS:
    - unitNumber: The unit identifier (e.g., "101", "A-201", "Unit 5")
-   - status: Occupancy status (occupied, vacant, notice, etc.)
-   - monthlyRent: The rent amount
+   - status: Occupancy status column (occupied, vacant, notice, etc.)
+   - monthlyRent: The rent amount (look for "Rent", "Market Rent", "Lease Rent")
    - tenantName: Tenant/resident name
+
+   ADDITIONAL FIELDS:
+   - unitSqft: Square footage (look for "SQFT", "Sq Ft", "Sq. Feet", "Square Footage")
+   - unitType: Unit type/floorplan (look for "Type", "Floorplan", "BD/BA", "Unit Type" - values like "1BR/1BA", "A2", "Studio")
+   - leaseStatus: Raw lease status if different from status (look for "Lease Status", "Unit/Lease Status")
+   - moveInDate: Move-in date (look for "Move In", "Move-In", "MoveIn")
+   - moveOutDate: Move-out date (look for "Move Out", "Move-Out", "MoveOut")
+   - leaseStartDate: Lease start (look for "Lease Start", "Lease From", "Start Date")
+   - leaseEndDate: Lease end (look for "Lease End", "Lease To", "Lease Expiration", "End Date")
+
 3. Find any stated total unit count (e.g., "Total Units: 156", "208 units", "totals / averages:" row with a count)
 4. Identify the row where actual unit data starts (after headers)
 5. Identify the row where unit data ENDS - look for summary sections like "Unit Type Occupancy", "Total", "Summary", "Totals", etc. in the LAST ROWS section
@@ -155,8 +174,8 @@ CRITICAL - DISTINGUISHING UNITS FROM SUMMARY DATA:
 
 IMPORTANT:
 - Column indices are 0-based (first column = 0)
-- "Unit Type" or "Unit Sqft" columns are NOT the unit number column
-- Look for the column that contains actual unit identifiers
+- "Unit Type" or "Floorplan" columns are NOT the unit number column - they contain type codes like "A2", "1BR"
+- Look for the column that contains actual unit identifiers (apartment numbers)
 - The rent column should have dollar amounts, not codes
 - If a field isn't present, use null
 
@@ -171,7 +190,14 @@ Respond with ONLY valid JSON matching this structure:
     "unitNumber": <column index or null>,
     "status": <column index or null>,
     "monthlyRent": <column index or null>,
-    "tenantName": <column index or null>
+    "tenantName": <column index or null>,
+    "unitSqft": <column index or null>,
+    "unitType": <column index or null>,
+    "leaseStatus": <column index or null>,
+    "moveInDate": <column index or null>,
+    "moveOutDate": <column index or null>,
+    "leaseStartDate": <column index or null>,
+    "leaseEndDate": <column index or null>
   },
   "statedUnitCount": <number or null>,
   "dataStartRow": <0-indexed row where unit data begins>,
@@ -216,7 +242,7 @@ function normalizeStatus(value: unknown): UnitStatus {
 }
 
 /**
- * Parse a numeric value (rent amount)
+ * Parse a numeric value (rent amount, sqft)
  */
 function parseNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
@@ -229,6 +255,55 @@ function parseNumber(value: unknown): number | null {
 
   const num = parseFloat(cleaned);
   return isNaN(num) ? null : num;
+}
+
+/**
+ * Parse a date value to ISO string
+ * Handles Excel serial dates and various string formats
+ */
+function parseDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+
+  // Excel stores dates as numbers (days since 1900-01-01)
+  if (typeof value === 'number') {
+    // Excel date serial number
+    const excelEpoch = new Date(1899, 11, 30); // Dec 30, 1899
+    const date = new Date(excelEpoch.getTime() + value * 24 * 60 * 60 * 1000);
+    if (!isNaN(date.getTime())) {
+      return date.toISOString().split('T')[0];
+    }
+  }
+
+  const str = String(value).trim();
+  if (!str) return null;
+
+  // Try parsing common date formats
+  const date = new Date(str);
+  if (!isNaN(date.getTime())) {
+    return date.toISOString().split('T')[0];
+  }
+
+  // Try MM/DD/YYYY format
+  const mdyMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (mdyMatch) {
+    const [, month, day, year] = mdyMatch;
+    const fullYear = year.length === 2 ? (parseInt(year) > 50 ? `19${year}` : `20${year}`) : year;
+    const parsed = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.toISOString().split('T')[0];
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Parse a string value (tenant name, unit type, etc.)
+ */
+function parseString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  return str === '' ? null : str;
 }
 
 /**
@@ -347,7 +422,7 @@ export async function parseExcel(buffer: Buffer): Promise<{
     const unitNumber = String(unitValue).trim();
     const unitKey = unitNumber.toUpperCase();
 
-    // Build the unit object
+    // Build the unit object - primary fields
     const status = mapping.columns.status !== null
       ? normalizeStatus(row[mapping.columns.status])
       : 'occupied';
@@ -355,7 +430,30 @@ export async function parseExcel(buffer: Buffer): Promise<{
       ? parseNumber(row[mapping.columns.monthlyRent])
       : null;
     const tenantName = mapping.columns.tenantName !== null
-      ? row[mapping.columns.tenantName] ? String(row[mapping.columns.tenantName]).trim() : null
+      ? parseString(row[mapping.columns.tenantName])
+      : null;
+
+    // Additional fields (all optional)
+    const unitSqft = mapping.columns.unitSqft !== null
+      ? parseNumber(row[mapping.columns.unitSqft])
+      : null;
+    const unitType = mapping.columns.unitType !== null
+      ? parseString(row[mapping.columns.unitType])
+      : null;
+    const leaseStatus = mapping.columns.leaseStatus !== null
+      ? parseString(row[mapping.columns.leaseStatus])
+      : (mapping.columns.status !== null ? parseString(row[mapping.columns.status]) : null);
+    const moveInDate = mapping.columns.moveInDate !== null
+      ? parseDate(row[mapping.columns.moveInDate])
+      : null;
+    const moveOutDate = mapping.columns.moveOutDate !== null
+      ? parseDate(row[mapping.columns.moveOutDate])
+      : null;
+    const leaseStartDate = mapping.columns.leaseStartDate !== null
+      ? parseDate(row[mapping.columns.leaseStartDate])
+      : null;
+    const leaseEndDate = mapping.columns.leaseEndDate !== null
+      ? parseDate(row[mapping.columns.leaseEndDate])
       : null;
 
     const unit: MVPUnit = {
@@ -363,6 +461,13 @@ export async function parseExcel(buffer: Buffer): Promise<{
       status,
       monthlyRent,
       tenantName,
+      unitSqft,
+      unitType,
+      leaseStatus,
+      moveInDate,
+      moveOutDate,
+      leaseStartDate,
+      leaseEndDate,
       sourceRow: r + 1,
     };
 

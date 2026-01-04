@@ -7,6 +7,16 @@ export interface MVPUnit {
   status: UnitStatus;
   monthlyRent: number | null;
   tenantName: string | null;
+
+  // Additional fields (all optional)
+  unitSqft: number | null;
+  unitType: string | null;           // e.g., "1BR/1BA", "Studio", "2BR/2BA"
+  leaseStatus: string | null;        // Raw lease status from source (e.g., "Occupied", "Vacant-Leased")
+  moveInDate: string | null;         // ISO date string
+  moveOutDate: string | null;        // ISO date string
+  leaseStartDate: string | null;     // ISO date string
+  leaseEndDate: string | null;       // ISO date string
+
   // Metadata for validation
   sourceRow?: number;
   sourcePage?: number;
@@ -59,4 +69,6 @@ export interface ExtractionSummary {
   countMatch: boolean | null;
   criticalIssues: number;
   uploadedAt: string;
+  processingTimeMs: number | null;
+  error: string | null;
 }

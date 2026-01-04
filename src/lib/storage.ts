@@ -76,6 +76,8 @@ export async function listExtractions(): Promise<ExtractionSummary[]> {
           countMatch: extraction.countMatch,
           criticalIssues: extraction.validationIssues.filter(i => i.severity === 'critical').length,
           uploadedAt: extraction.uploadedAt,
+          processingTimeMs: extraction.processingTimeMs,
+          error: extraction.error,
         });
       } catch {
         // Skip invalid files

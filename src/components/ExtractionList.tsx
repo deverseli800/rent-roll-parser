@@ -21,6 +21,13 @@ function getStatusBadge(status: ExtractionSummary['status']) {
   return <Badge color={colors[status]}>{status}</Badge>;
 }
 
+function formatProcessingTime(ms: number | null): string {
+  if (ms === null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60000).toFixed(1)}m`;
+}
+
 function getCountBadge(extraction: ExtractionSummary) {
   if (extraction.countMatch === true) {
     return (
@@ -65,6 +72,7 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
           <Table.Th>Units</Table.Th>
           <Table.Th>Issues</Table.Th>
           <Table.Th>Status</Table.Th>
+          <Table.Th>Time</Table.Th>
           <Table.Th>Uploaded</Table.Th>
           <Table.Th>Actions</Table.Th>
         </Table.Tr>
@@ -90,7 +98,20 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
                 <Badge color="green">None</Badge>
               )}
             </Table.Td>
-            <Table.Td>{getStatusBadge(extraction.status)}</Table.Td>
+            <Table.Td>
+              {extraction.error ? (
+                <Tooltip label={extraction.error} multiline w={300}>
+                  {getStatusBadge(extraction.status)}
+                </Tooltip>
+              ) : (
+                getStatusBadge(extraction.status)
+              )}
+            </Table.Td>
+            <Table.Td>
+              <Text size="sm" c="dimmed">
+                {formatProcessingTime(extraction.processingTimeMs)}
+              </Text>
+            </Table.Td>
             <Table.Td>
               <Text size="sm" c="dimmed">
                 {new Date(extraction.uploadedAt).toLocaleDateString()}
