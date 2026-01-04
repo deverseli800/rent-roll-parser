@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { parseRentRoll } from '@/lib/parsers';
 import { validateExtraction } from '@/lib/validation/validators';
 import { saveExtraction } from '@/lib/storage';
+import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import type { RentRollExtraction } from '@/lib/types';
 
 export async function POST(request: NextRequest) {
@@ -48,6 +49,7 @@ export async function POST(request: NextRequest) {
       statedUnitCount: null,
       extractedUnitCount: 0,
       countMatch: null,
+      summaryStats: null,
       validationIssues: [],
       sourceType: fileName.endsWith('.pdf') ? 'pdf' : 'excel',
       sourceFormat: null,
@@ -77,6 +79,7 @@ export async function POST(request: NextRequest) {
       extraction.sourceFormat = result.sourceFormat;
       extraction.pageCount = result.pageCount;
       extraction.validationIssues = issues;
+      extraction.summaryStats = calculateSummaryStats(result.units);
       extraction.processedAt = new Date().toISOString();
       extraction.processingTimeMs = Date.now() - startTime;
       extraction.status = issues.some(i => i.severity === 'critical') ? 'review' : 'review';

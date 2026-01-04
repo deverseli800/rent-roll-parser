@@ -37,6 +37,22 @@ export const ValidationIssueSchema = z.object({
   details: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const SummaryStatsSchema = z.object({
+  totalUnits: z.number(),
+  occupiedUnits: z.number(),
+  vacantUnits: z.number(),
+  noticeUnits: z.number(),
+  modelUnits: z.number(),
+  downUnits: z.number(),
+  applicantUnits: z.number(),
+  physicalOccupancy: z.number().nullable(),
+  totalSqft: z.number().nullable(),
+  totalMonthlyRent: z.number().nullable(),
+  averageRent: z.number().nullable(),
+  averageSqft: z.number().nullable(),
+  averageRentPerSqft: z.number().nullable(),
+});
+
 export const RentRollExtractionSchema = z.object({
   id: z.string().uuid(),
   fileName: z.string(),
@@ -50,6 +66,8 @@ export const RentRollExtractionSchema = z.object({
   statedUnitCount: z.number().nullable(),
   extractedUnitCount: z.number(),
   countMatch: z.boolean().nullable(),
+
+  summaryStats: SummaryStatsSchema.nullable(),
 
   validationIssues: z.array(ValidationIssueSchema),
 

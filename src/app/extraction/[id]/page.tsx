@@ -32,7 +32,7 @@ import {
   IconAlertTriangle,
   IconCircleCheck,
 } from '@tabler/icons-react';
-import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue } from '@/lib/types';
+import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats } from '@/lib/types';
 
 const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
   { value: 'occupied', label: 'Occupied' },
@@ -101,6 +101,92 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
           </Badge>
         </div>
       </Group>
+    </Card>
+  );
+}
+
+function SummaryStatsCard({ stats }: { stats: SummaryStats | null }) {
+  if (!stats) {
+    return null;
+  }
+
+  const formatCurrency = (value: number | null) => {
+    if (value === null) return '—';
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(value);
+  };
+
+  const formatNumber = (value: number | null) => {
+    if (value === null) return '—';
+    return new Intl.NumberFormat('en-US').format(value);
+  };
+
+  const formatPercent = (value: number | null) => {
+    if (value === null) return '—';
+    return `${value.toFixed(1)}%`;
+  };
+
+  return (
+    <Card withBorder p="md">
+      <Title order={5} mb="md">Summary Statistics</Title>
+      <SimpleGrid cols={{ base: 2, sm: 3, md: 4, lg: 6 }} spacing="md">
+        <div>
+          <Text size="sm" c="dimmed">Occupied</Text>
+          <Text size="lg" fw={600}>{stats.occupiedUnits}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Vacant</Text>
+          <Text size="lg" fw={600}>{stats.vacantUnits}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Notice</Text>
+          <Text size="lg" fw={600}>{stats.noticeUnits}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Model</Text>
+          <Text size="lg" fw={600}>{stats.modelUnits}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Down</Text>
+          <Text size="lg" fw={600}>{stats.downUnits}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Applicant</Text>
+          <Text size="lg" fw={600}>{stats.applicantUnits}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Physical Occupancy</Text>
+          <Text size="lg" fw={600} c={stats.physicalOccupancy && stats.physicalOccupancy >= 90 ? 'green' : 'orange'}>
+            {formatPercent(stats.physicalOccupancy)}
+          </Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Total Sqft</Text>
+          <Text size="lg" fw={600}>{formatNumber(stats.totalSqft)}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Total Monthly Rent</Text>
+          <Text size="lg" fw={600}>{formatCurrency(stats.totalMonthlyRent)}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Avg Rent</Text>
+          <Text size="lg" fw={600}>{formatCurrency(stats.averageRent)}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Avg Sqft</Text>
+          <Text size="lg" fw={600}>{formatNumber(stats.averageSqft)}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Avg Rent/Sqft</Text>
+          <Text size="lg" fw={600}>
+            {stats.averageRentPerSqft !== null ? `$${stats.averageRentPerSqft.toFixed(2)}` : '—'}
+          </Text>
+        </div>
+      </SimpleGrid>
     </Card>
   );
 }
@@ -347,6 +433,9 @@ export default function ExtractionPage() {
 
         {/* Unit Count Card */}
         <UnitCountCard extraction={{ ...extraction, extractedUnitCount: units.length }} />
+
+        {/* Summary Statistics */}
+        <SummaryStatsCard stats={extraction.summaryStats} />
 
         {/* Validation Issues */}
         <Paper withBorder p="md">

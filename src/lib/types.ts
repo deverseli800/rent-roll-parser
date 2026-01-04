@@ -30,6 +30,24 @@ export interface ValidationIssue {
   details?: Record<string, unknown>;
 }
 
+export interface SummaryStats {
+  totalUnits: number;
+  occupiedUnits: number;
+  vacantUnits: number;
+  noticeUnits: number;
+  modelUnits: number;
+  downUnits: number;
+  applicantUnits: number;
+
+  // Calculated metrics
+  physicalOccupancy: number | null;  // Percentage (0-100)
+  totalSqft: number | null;
+  totalMonthlyRent: number | null;
+  averageRent: number | null;
+  averageSqft: number | null;
+  averageRentPerSqft: number | null;
+}
+
 export interface RentRollExtraction {
   id: string;
   fileName: string;
@@ -45,6 +63,9 @@ export interface RentRollExtraction {
   statedUnitCount: number | null;  // From document if found
   extractedUnitCount: number;
   countMatch: boolean | null;  // null if stated count not found
+
+  // Summary statistics (calculated from units)
+  summaryStats: SummaryStats | null;
 
   // Validation results
   validationIssues: ValidationIssue[];
