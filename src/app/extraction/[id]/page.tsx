@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, memo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Container,
@@ -10,17 +10,16 @@ import {
   Text,
   Group,
   Button,
-  Table,
   Badge,
-  ActionIcon,
-  TextInput,
-  Select,
-  NumberInput,
   Modal,
   Alert,
   Loader,
   Card,
   SimpleGrid,
+  TextInput,
+  Select,
+  NumberInput,
+  ActionIcon,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -28,12 +27,17 @@ import {
   IconDownload,
   IconCheck,
   IconPlus,
-  IconTrash,
   IconAlertTriangle,
   IconCircleCheck,
+  IconTrash,
 } from '@tabler/icons-react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { AgGridReact } from 'ag-grid-react';
+import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
+import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats } from '@/lib/types';
+
+// Register AG Grid modules
+ModuleRegistry.registerModules([AllCommunityModule]);
 
 const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
   { value: 'occupied', label: 'Occupied' },
@@ -125,305 +129,6 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
         </div>
       </Group>
     </Card>
-  );
-}
-
-// Memoized row component to prevent re-rendering all rows on single cell change
-interface UnitRowProps {
-  unit: MVPUnit;
-  index: number;
-  onUnitChange: (index: number, field: keyof MVPUnit, value: unknown) => void;
-  onDeleteUnit: (index: number) => void;
-}
-
-const UnitRow = memo(function UnitRow({ unit, index, onUnitChange, onDeleteUnit }: UnitRowProps) {
-  return (
-    <Table.Tr>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.unitNumber}
-          onChange={(e) => onUnitChange(index, 'unitNumber', e.target.value)}
-          styles={{ input: { width: 80 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <Select
-          size="xs"
-          value={unit.status}
-          data={STATUS_OPTIONS}
-          onChange={(value) => onUnitChange(index, 'status', value)}
-          styles={{ input: { width: 100 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.unitType ?? ''}
-          onChange={(e) => onUnitChange(index, 'unitType', e.target.value || null)}
-          placeholder="—"
-          styles={{ input: { width: 80 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <NumberInput
-          size="xs"
-          value={unit.unitSqft ?? ''}
-          onChange={(value) => onUnitChange(index, 'unitSqft', value || null)}
-          styles={{ input: { width: 70 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <NumberInput
-          size="xs"
-          value={unit.monthlyRent ?? ''}
-          onChange={(value) => onUnitChange(index, 'monthlyRent', value || null)}
-          prefix="$"
-          thousandSeparator=","
-          styles={{ input: { width: 100 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.tenantName ?? ''}
-          onChange={(e) => onUnitChange(index, 'tenantName', e.target.value || null)}
-          placeholder="—"
-          styles={{ input: { width: 150 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.moveInDate ?? ''}
-          onChange={(e) => onUnitChange(index, 'moveInDate', e.target.value || null)}
-          placeholder="—"
-          styles={{ input: { width: 100 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.moveOutDate ?? ''}
-          onChange={(e) => onUnitChange(index, 'moveOutDate', e.target.value || null)}
-          placeholder="—"
-          styles={{ input: { width: 100 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.leaseStartDate ?? ''}
-          onChange={(e) => onUnitChange(index, 'leaseStartDate', e.target.value || null)}
-          placeholder="—"
-          styles={{ input: { width: 100 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <TextInput
-          size="xs"
-          value={unit.leaseEndDate ?? ''}
-          onChange={(e) => onUnitChange(index, 'leaseEndDate', e.target.value || null)}
-          placeholder="—"
-          styles={{ input: { width: 100 } }}
-        />
-      </Table.Td>
-      <Table.Td>
-        <ActionIcon
-          color="red"
-          variant="subtle"
-          onClick={() => onDeleteUnit(index)}
-        >
-          <IconTrash size={16} />
-        </ActionIcon>
-      </Table.Td>
-    </Table.Tr>
-  );
-});
-
-// Virtualized table component for large datasets
-const ROW_HEIGHT = 45;
-const TABLE_HEIGHT = 600;
-
-interface VirtualizedUnitsTableProps {
-  units: MVPUnit[];
-  onUnitChange: (index: number, field: keyof MVPUnit, value: unknown) => void;
-  onDeleteUnit: (index: number) => void;
-}
-
-function VirtualizedUnitsTable({ units, onUnitChange, onDeleteUnit }: VirtualizedUnitsTableProps) {
-  const parentRef = useRef<HTMLDivElement>(null);
-
-  const virtualizer = useVirtualizer({
-    count: units.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 10, // Render 10 extra rows above/below viewport for smoother scrolling
-  });
-
-  const virtualRows = virtualizer.getVirtualItems();
-  const totalSize = virtualizer.getTotalSize();
-
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <div style={{ minWidth: 1400 }}>
-        {/* Fixed header */}
-        <Table striped>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th style={{ width: 100 }}>Unit #</Table.Th>
-              <Table.Th style={{ width: 120 }}>Status</Table.Th>
-              <Table.Th style={{ width: 100 }}>Type</Table.Th>
-              <Table.Th style={{ width: 90 }}>Sqft</Table.Th>
-              <Table.Th style={{ width: 120 }}>Monthly Rent</Table.Th>
-              <Table.Th style={{ width: 170 }}>Tenant Name</Table.Th>
-              <Table.Th style={{ width: 120 }}>Move In</Table.Th>
-              <Table.Th style={{ width: 120 }}>Move Out</Table.Th>
-              <Table.Th style={{ width: 120 }}>Lease Start</Table.Th>
-              <Table.Th style={{ width: 120 }}>Lease End</Table.Th>
-              <Table.Th style={{ width: 60 }}>Actions</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-        </Table>
-
-        {/* Virtualized body */}
-        <div
-          ref={parentRef}
-          style={{
-            height: TABLE_HEIGHT,
-            overflow: 'auto',
-          }}
-        >
-          <div
-            style={{
-              height: totalSize,
-              width: '100%',
-              position: 'relative',
-            }}
-          >
-            <Table striped>
-              <Table.Tbody>
-                {virtualRows.map((virtualRow) => {
-                  const unit = units[virtualRow.index];
-                  return (
-                    <Table.Tr
-                      key={unit.unitNumber + '-' + virtualRow.index}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: ROW_HEIGHT,
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                    >
-                      <Table.Td style={{ width: 100 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.unitNumber}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'unitNumber', e.target.value)}
-                          styles={{ input: { width: 80 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 120 }}>
-                        <Select
-                          size="xs"
-                          value={unit.status}
-                          data={STATUS_OPTIONS}
-                          onChange={(value) => onUnitChange(virtualRow.index, 'status', value)}
-                          styles={{ input: { width: 100 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 100 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.unitType ?? ''}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'unitType', e.target.value || null)}
-                          placeholder="—"
-                          styles={{ input: { width: 80 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 90 }}>
-                        <NumberInput
-                          size="xs"
-                          value={unit.unitSqft ?? ''}
-                          onChange={(value) => onUnitChange(virtualRow.index, 'unitSqft', value || null)}
-                          styles={{ input: { width: 70 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 120 }}>
-                        <NumberInput
-                          size="xs"
-                          value={unit.monthlyRent ?? ''}
-                          onChange={(value) => onUnitChange(virtualRow.index, 'monthlyRent', value || null)}
-                          prefix="$"
-                          thousandSeparator=","
-                          styles={{ input: { width: 100 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 170 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.tenantName ?? ''}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'tenantName', e.target.value || null)}
-                          placeholder="—"
-                          styles={{ input: { width: 150 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 120 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.moveInDate ?? ''}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'moveInDate', e.target.value || null)}
-                          placeholder="—"
-                          styles={{ input: { width: 100 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 120 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.moveOutDate ?? ''}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'moveOutDate', e.target.value || null)}
-                          placeholder="—"
-                          styles={{ input: { width: 100 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 120 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.leaseStartDate ?? ''}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'leaseStartDate', e.target.value || null)}
-                          placeholder="—"
-                          styles={{ input: { width: 100 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 120 }}>
-                        <TextInput
-                          size="xs"
-                          value={unit.leaseEndDate ?? ''}
-                          onChange={(e) => onUnitChange(virtualRow.index, 'leaseEndDate', e.target.value || null)}
-                          placeholder="—"
-                          styles={{ input: { width: 100 } }}
-                        />
-                      </Table.Td>
-                      <Table.Td style={{ width: 60 }}>
-                        <ActionIcon
-                          color="red"
-                          variant="subtle"
-                          onClick={() => onDeleteUnit(virtualRow.index)}
-                        >
-                          <IconTrash size={16} />
-                        </ActionIcon>
-                      </Table.Td>
-                    </Table.Tr>
-                  );
-                })}
-              </Table.Tbody>
-            </Table>
-          </div>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -659,6 +364,144 @@ export default function ExtractionPage() {
     setUnits(prevUnits => prevUnits.filter((_, i) => i !== index));
   }, []);
 
+  // AG Grid column definitions
+  const columnDefs = useMemo<ColDef<MVPUnit>[]>(() => [
+    {
+      field: 'unitNumber',
+      headerName: 'Unit #',
+      width: 100,
+      editable: true,
+      pinned: 'left',
+    },
+    {
+      field: 'status',
+      headerName: 'Status',
+      width: 120,
+      editable: true,
+      cellEditor: 'agSelectCellEditor',
+      cellEditorParams: {
+        values: ['occupied', 'vacant', 'notice', 'model', 'down', 'applicant'],
+      },
+      cellStyle: (params) => {
+        const colors: Record<string, string> = {
+          occupied: '#d3f9d8',
+          vacant: '#ffe3e3',
+          notice: '#fff3bf',
+          model: '#d0ebff',
+          down: '#e9ecef',
+          applicant: '#e5dbff',
+        };
+        return { backgroundColor: colors[params.value] || 'transparent' };
+      },
+    },
+    {
+      field: 'unitType',
+      headerName: 'Type',
+      width: 100,
+      editable: true,
+    },
+    {
+      field: 'unitSqft',
+      headerName: 'Sqft',
+      width: 80,
+      editable: true,
+      type: 'numericColumn',
+      valueParser: (params) => {
+        const val = Number(params.newValue);
+        return isNaN(val) ? null : val;
+      },
+    },
+    {
+      field: 'monthlyRent',
+      headerName: 'Rent',
+      width: 100,
+      editable: true,
+      type: 'numericColumn',
+      valueFormatter: (params) => {
+        if (params.value == null) return '';
+        return new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 0,
+        }).format(params.value);
+      },
+      valueParser: (params) => {
+        const val = Number(String(params.newValue).replace(/[$,]/g, ''));
+        return isNaN(val) ? null : val;
+      },
+    },
+    {
+      field: 'tenantName',
+      headerName: 'Tenant',
+      width: 180,
+      editable: true,
+    },
+    {
+      field: 'leaseStartDate',
+      headerName: 'Lease Start',
+      width: 110,
+      editable: true,
+    },
+    {
+      field: 'leaseEndDate',
+      headerName: 'Lease End',
+      width: 110,
+      editable: true,
+    },
+    {
+      field: 'moveInDate',
+      headerName: 'Move In',
+      width: 110,
+      editable: true,
+    },
+    {
+      field: 'moveOutDate',
+      headerName: 'Move Out',
+      width: 110,
+      editable: true,
+    },
+    {
+      field: 'leaseStatus',
+      headerName: 'Lease Status',
+      width: 120,
+      editable: true,
+    },
+    {
+      headerName: '',
+      width: 50,
+      pinned: 'right',
+      cellRenderer: (params: { node: { rowIndex: number | null } }) => {
+        const rowIndex = params.node.rowIndex;
+        if (rowIndex === null) return null;
+        return (
+          <ActionIcon
+            color="red"
+            variant="subtle"
+            size="sm"
+            onClick={() => handleDeleteUnit(rowIndex)}
+          >
+            <IconTrash size={14} />
+          </ActionIcon>
+        );
+      },
+      sortable: false,
+      filter: false,
+    },
+  ], [handleDeleteUnit]);
+
+  const defaultColDef = useMemo<ColDef>(() => ({
+    sortable: true,
+    filter: true,
+    resizable: true,
+  }), []);
+
+  const onCellValueChanged = useCallback((event: CellValueChangedEvent<MVPUnit>) => {
+    const { rowIndex, colDef, newValue } = event;
+    if (rowIndex !== null && colDef.field) {
+      handleUnitChange(rowIndex, colDef.field as keyof MVPUnit, newValue);
+    }
+  }, [handleUnitChange]);
+
   const handleAddUnit = () => {
     if (!newUnit.unitNumber) {
       notifications.show({
@@ -779,11 +622,19 @@ export default function ExtractionPage() {
             </Button>
           </Group>
 
-          <VirtualizedUnitsTable
-            units={units}
-            onUnitChange={handleUnitChange}
-            onDeleteUnit={handleDeleteUnit}
-          />
+          <div style={{ height: 600, width: '100%' }}>
+            <AgGridReact
+              theme={themeQuartz}
+              rowData={units}
+              columnDefs={columnDefs}
+              defaultColDef={defaultColDef}
+              onCellValueChanged={onCellValueChanged}
+              rowSelection="multiple"
+              suppressRowClickSelection={true}
+              animateRows={false}
+              getRowId={(params) => String(params.data.unitNumber)}
+            />
+          </div>
         </Paper>
       </Stack>
 
