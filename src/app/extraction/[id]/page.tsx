@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, memo } from 'react';
+import { useState, useEffect, useCallback, memo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Container,
@@ -32,6 +32,7 @@ import {
   IconAlertTriangle,
   IconCircleCheck,
 } from '@tabler/icons-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats } from '@/lib/types';
 
 const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
@@ -239,6 +240,192 @@ const UnitRow = memo(function UnitRow({ unit, index, onUnitChange, onDeleteUnit 
     </Table.Tr>
   );
 });
+
+// Virtualized table component for large datasets
+const ROW_HEIGHT = 45;
+const TABLE_HEIGHT = 600;
+
+interface VirtualizedUnitsTableProps {
+  units: MVPUnit[];
+  onUnitChange: (index: number, field: keyof MVPUnit, value: unknown) => void;
+  onDeleteUnit: (index: number) => void;
+}
+
+function VirtualizedUnitsTable({ units, onUnitChange, onDeleteUnit }: VirtualizedUnitsTableProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: units.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10, // Render 10 extra rows above/below viewport for smoother scrolling
+  });
+
+  const virtualRows = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ minWidth: 1400 }}>
+        {/* Fixed header */}
+        <Table striped>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th style={{ width: 100 }}>Unit #</Table.Th>
+              <Table.Th style={{ width: 120 }}>Status</Table.Th>
+              <Table.Th style={{ width: 100 }}>Type</Table.Th>
+              <Table.Th style={{ width: 90 }}>Sqft</Table.Th>
+              <Table.Th style={{ width: 120 }}>Monthly Rent</Table.Th>
+              <Table.Th style={{ width: 170 }}>Tenant Name</Table.Th>
+              <Table.Th style={{ width: 120 }}>Move In</Table.Th>
+              <Table.Th style={{ width: 120 }}>Move Out</Table.Th>
+              <Table.Th style={{ width: 120 }}>Lease Start</Table.Th>
+              <Table.Th style={{ width: 120 }}>Lease End</Table.Th>
+              <Table.Th style={{ width: 60 }}>Actions</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+        </Table>
+
+        {/* Virtualized body */}
+        <div
+          ref={parentRef}
+          style={{
+            height: TABLE_HEIGHT,
+            overflow: 'auto',
+          }}
+        >
+          <div
+            style={{
+              height: totalSize,
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            <Table striped>
+              <Table.Tbody>
+                {virtualRows.map((virtualRow) => {
+                  const unit = units[virtualRow.index];
+                  return (
+                    <Table.Tr
+                      key={unit.unitNumber + '-' + virtualRow.index}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: ROW_HEIGHT,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <Table.Td style={{ width: 100 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.unitNumber}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'unitNumber', e.target.value)}
+                          styles={{ input: { width: 80 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 120 }}>
+                        <Select
+                          size="xs"
+                          value={unit.status}
+                          data={STATUS_OPTIONS}
+                          onChange={(value) => onUnitChange(virtualRow.index, 'status', value)}
+                          styles={{ input: { width: 100 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 100 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.unitType ?? ''}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'unitType', e.target.value || null)}
+                          placeholder="—"
+                          styles={{ input: { width: 80 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 90 }}>
+                        <NumberInput
+                          size="xs"
+                          value={unit.unitSqft ?? ''}
+                          onChange={(value) => onUnitChange(virtualRow.index, 'unitSqft', value || null)}
+                          styles={{ input: { width: 70 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 120 }}>
+                        <NumberInput
+                          size="xs"
+                          value={unit.monthlyRent ?? ''}
+                          onChange={(value) => onUnitChange(virtualRow.index, 'monthlyRent', value || null)}
+                          prefix="$"
+                          thousandSeparator=","
+                          styles={{ input: { width: 100 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 170 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.tenantName ?? ''}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'tenantName', e.target.value || null)}
+                          placeholder="—"
+                          styles={{ input: { width: 150 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 120 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.moveInDate ?? ''}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'moveInDate', e.target.value || null)}
+                          placeholder="—"
+                          styles={{ input: { width: 100 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 120 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.moveOutDate ?? ''}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'moveOutDate', e.target.value || null)}
+                          placeholder="—"
+                          styles={{ input: { width: 100 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 120 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.leaseStartDate ?? ''}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'leaseStartDate', e.target.value || null)}
+                          placeholder="—"
+                          styles={{ input: { width: 100 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 120 }}>
+                        <TextInput
+                          size="xs"
+                          value={unit.leaseEndDate ?? ''}
+                          onChange={(e) => onUnitChange(virtualRow.index, 'leaseEndDate', e.target.value || null)}
+                          placeholder="—"
+                          styles={{ input: { width: 100 } }}
+                        />
+                      </Table.Td>
+                      <Table.Td style={{ width: 60 }}>
+                        <ActionIcon
+                          color="red"
+                          variant="subtle"
+                          onClick={() => onDeleteUnit(virtualRow.index)}
+                        >
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      </Table.Td>
+                    </Table.Tr>
+                  );
+                })}
+              </Table.Tbody>
+            </Table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function SummaryStatsCard({ stats }: { stats: SummaryStats | null }) {
   if (!stats) {
@@ -592,36 +779,11 @@ export default function ExtractionPage() {
             </Button>
           </Group>
 
-          <Table.ScrollContainer minWidth={1400}>
-            <Table striped highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Unit #</Table.Th>
-                  <Table.Th>Status</Table.Th>
-                  <Table.Th>Type</Table.Th>
-                  <Table.Th>Sqft</Table.Th>
-                  <Table.Th>Monthly Rent</Table.Th>
-                  <Table.Th>Tenant Name</Table.Th>
-                  <Table.Th>Move In</Table.Th>
-                  <Table.Th>Move Out</Table.Th>
-                  <Table.Th>Lease Start</Table.Th>
-                  <Table.Th>Lease End</Table.Th>
-                  <Table.Th w={60}>Actions</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {units.map((unit, index) => (
-                  <UnitRow
-                    key={unit.unitNumber + '-' + index}
-                    unit={unit}
-                    index={index}
-                    onUnitChange={handleUnitChange}
-                    onDeleteUnit={handleDeleteUnit}
-                  />
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
+          <VirtualizedUnitsTable
+            units={units}
+            onUnitChange={handleUnitChange}
+            onDeleteUnit={handleDeleteUnit}
+          />
         </Paper>
       </Stack>
 
