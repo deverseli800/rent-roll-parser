@@ -16,6 +16,15 @@ export const MVPUnitSchema = z.object({
   status: UnitStatusSchema,
   monthlyRent: z.number().nullable(),
   tenantName: z.string().nullable(),
+  // Additional fields
+  unitSqft: z.number().nullable(),
+  unitType: z.string().nullable(),
+  leaseStatus: z.string().nullable(),
+  moveInDate: z.string().nullable(),
+  moveOutDate: z.string().nullable(),
+  leaseStartDate: z.string().nullable(),
+  leaseEndDate: z.string().nullable(),
+  // Metadata
   sourceRow: z.number().optional(),
   sourcePage: z.number().optional(),
 });
@@ -61,6 +70,14 @@ export const ClaudeExtractionResponseSchema = z.object({
     status: z.string(),
     monthlyRent: z.number().nullable().optional(),
     tenantName: z.string().nullable().optional(),
+    // Additional fields
+    unitSqft: z.number().nullable().optional(),
+    unitType: z.string().nullable().optional(),
+    leaseStatus: z.string().nullable().optional(),
+    moveInDate: z.string().nullable().optional(),
+    moveOutDate: z.string().nullable().optional(),
+    leaseStartDate: z.string().nullable().optional(),
+    leaseEndDate: z.string().nullable().optional(),
   })),
   extractedCount: z.number().optional(),
   countMatch: z.boolean().optional(),

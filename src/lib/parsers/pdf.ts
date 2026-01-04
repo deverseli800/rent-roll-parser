@@ -20,7 +20,9 @@ IMPORTANT - DO NOT count these as units:
 - Empty rows
 - Property information rows
 
-STEP 3: For each unit, extract:
+STEP 3: For each unit, extract the following fields (use null if not present):
+
+PRIMARY FIELDS:
 - unitNumber (REQUIRED): The unit identifier
 - status (REQUIRED): One of: occupied, vacant, notice, model, applicant
   - "Occupied", "Current", "C" = occupied
@@ -28,8 +30,17 @@ STEP 3: For each unit, extract:
   - "NTV", "Notice", "Occupied-NTV" = notice
   - "Model", "M" = model
   - "Applicant", "Pending" = applicant
-- monthlyRent: The primary rent amount (number only, no $ or commas). For occupied units, this should be their current rent.
+- monthlyRent: The primary rent amount (number only, no $ or commas)
 - tenantName: The tenant/resident name if present
+
+ADDITIONAL FIELDS (optional - include if present, omit if not found to save space):
+- unitSqft: Square footage (number only)
+- unitType: Unit type/floorplan (e.g., "1BR/1BA", "A2", "Studio")
+- leaseStatus: Raw lease status text
+- moveInDate: Move-in date (YYYY-MM-DD)
+- moveOutDate: Move-out date (YYYY-MM-DD)
+- leaseStartDate: Lease start (YYYY-MM-DD)
+- leaseEndDate: Lease end (YYYY-MM-DD)
 
 STEP 4: After extraction, count your extracted units. If you found a stated total in Step 1, verify your count matches. If not, re-examine the document.
 
@@ -42,7 +53,14 @@ Return ONLY valid JSON in this exact format:
       "unitNumber": "101",
       "status": "occupied",
       "monthlyRent": 1200,
-      "tenantName": "John Smith"
+      "tenantName": "John Smith",
+      "unitSqft": 850,
+      "unitType": "1BR/1BA",
+      "leaseStatus": "Occupied",
+      "moveInDate": "2024-01-15",
+      "moveOutDate": null,
+      "leaseStartDate": "2024-01-15",
+      "leaseEndDate": "2025-01-14"
     }
   ],
   "extractedCount": <count of units in your array>,
@@ -98,34 +116,42 @@ export async function parsePDF(buffer: Buffer): Promise<{
     throw new Error('ANTHROPIC_API_KEY environment variable is not set');
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({
+    apiKey,
+    timeout: 10 * 60 * 1000, // 10 minutes - disable pre-request duration check
+  });
 
   const base64PDF = bufferToBase64(buffer);
 
   try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 16000,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: base64PDF,
+    const response = await client.messages.create(
+      {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 64000,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: base64PDF,
+                },
               },
-            },
-            {
-              type: 'text',
-              text: MVP_EXTRACTION_PROMPT,
-            },
-          ],
-        },
-      ],
-    });
+              {
+                type: 'text',
+                text: MVP_EXTRACTION_PROMPT,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        timeout: 10 * 60 * 1000, // 10 minutes
+      }
+    );
 
     // Extract the text response
     const textContent = response.content.find(c => c.type === 'text');
@@ -150,13 +176,21 @@ export async function parsePDF(buffer: Buffer): Promise<{
       status: normalizeStatus(unit.status),
       monthlyRent: unit.monthlyRent ?? null,
       tenantName: unit.tenantName ?? null,
+      // Additional fields
+      unitSqft: unit.unitSqft ?? null,
+      unitType: unit.unitType ?? null,
+      leaseStatus: unit.leaseStatus ?? null,
+      moveInDate: unit.moveInDate ?? null,
+      moveOutDate: unit.moveOutDate ?? null,
+      leaseStartDate: unit.leaseStartDate ?? null,
+      leaseEndDate: unit.leaseEndDate ?? null,
+      // Metadata
       sourcePage: 1, // Claude processes all pages together
       sourceRow: index + 1,
     }));
 
     // Detect format based on patterns
     let format = 'unknown';
-    const firstUnits = units.slice(0, 5).map(u => u.unitNumber).join(' ');
     if (textContent.text.toLowerCase().includes('onesite') ||
         textContent.text.toLowerCase().includes('realpage')) {
       format = 'onesite';
@@ -171,36 +205,39 @@ export async function parsePDF(buffer: Buffer): Promise<{
       statedUnitCount: validated.statedTotalUnits ?? null,
       propertyName: validated.propertyName ?? null,
       format,
-      pageCount: null, // PDF page count would need separate handling
+      pageCount: null,
     };
   } catch (error) {
     // If Claude Sonnet 4 fails, try with Opus 4.5
     if (error instanceof Error && error.message.includes('model')) {
-      const client = new Anthropic({ apiKey });
-
-      const response = await client.messages.create({
-        model: 'claude-opus-4-5-20251101',
-        max_tokens: 16000,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: {
-                  type: 'base64',
-                  media_type: 'application/pdf',
-                  data: base64PDF,
+      const response = await client.messages.create(
+        {
+          model: 'claude-opus-4-5-20251101',
+          max_tokens: 64000,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'document',
+                  source: {
+                    type: 'base64',
+                    media_type: 'application/pdf',
+                    data: base64PDF,
+                  },
                 },
-              },
-              {
-                type: 'text',
-                text: MVP_EXTRACTION_PROMPT,
-              },
-            ],
-          },
-        ],
-      });
+                {
+                  type: 'text',
+                  text: MVP_EXTRACTION_PROMPT,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          timeout: 10 * 60 * 1000, // 10 minutes
+        }
+      );
 
       const textContent = response.content.find(c => c.type === 'text');
       if (!textContent || textContent.type !== 'text') {
@@ -220,6 +257,15 @@ export async function parsePDF(buffer: Buffer): Promise<{
         status: normalizeStatus(unit.status),
         monthlyRent: unit.monthlyRent ?? null,
         tenantName: unit.tenantName ?? null,
+        // Additional fields
+        unitSqft: unit.unitSqft ?? null,
+        unitType: unit.unitType ?? null,
+        leaseStatus: unit.leaseStatus ?? null,
+        moveInDate: unit.moveInDate ?? null,
+        moveOutDate: unit.moveOutDate ?? null,
+        leaseStartDate: unit.leaseStartDate ?? null,
+        leaseEndDate: unit.leaseEndDate ?? null,
+        // Metadata
         sourcePage: 1,
         sourceRow: index + 1,
       }));
