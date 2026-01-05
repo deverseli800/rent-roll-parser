@@ -30,11 +30,14 @@ import {
   IconAlertTriangle,
   IconCircleCheck,
   IconTrash,
+  IconX,
+  IconMinus,
+  IconShieldCheck,
 } from '@tabler/icons-react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
-import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats } from '@/lib/types';
+import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary } from '@/lib/types';
 
 // Register AG Grid modules
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -47,6 +50,100 @@ const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
   { value: 'down', label: 'Down' },
   { value: 'applicant', label: 'Applicant' },
 ];
+
+function VerificationChecksCard({ summary }: { summary: VerificationSummary | null }) {
+  if (!summary) {
+    return null;
+  }
+
+  const confidenceColors = {
+    high: 'green',
+    medium: 'yellow',
+    low: 'red',
+  };
+
+  const confidenceLabels = {
+    high: 'High Confidence',
+    medium: 'Medium Confidence',
+    low: 'Low Confidence',
+  };
+
+  const statusIcon = (status: 'passed' | 'failed' | 'skipped') => {
+    switch (status) {
+      case 'passed':
+        return <IconCircleCheck size={18} color="var(--mantine-color-green-6)" />;
+      case 'failed':
+        return <IconX size={18} color="var(--mantine-color-red-6)" />;
+      case 'skipped':
+        return <IconMinus size={18} color="var(--mantine-color-gray-5)" />;
+    }
+  };
+
+  const statusColor = (status: 'passed' | 'failed' | 'skipped') => {
+    switch (status) {
+      case 'passed': return 'green';
+      case 'failed': return 'red';
+      case 'skipped': return 'gray';
+    }
+  };
+
+  return (
+    <Card withBorder p="md">
+      <Group justify="space-between" mb="md">
+        <Group gap="sm">
+          <IconShieldCheck size={24} />
+          <Title order={5}>Verification Checks</Title>
+        </Group>
+        <Group gap="md">
+          <Text size="sm" c="dimmed">
+            {summary.passed}/{summary.total - summary.skipped} passed
+            {summary.skipped > 0 && ` (${summary.skipped} skipped)`}
+          </Text>
+          <Badge
+            size="lg"
+            color={confidenceColors[summary.confidence]}
+            variant="light"
+          >
+            {confidenceLabels[summary.confidence]}
+          </Badge>
+        </Group>
+      </Group>
+
+      <Stack gap="xs">
+        {summary.checks.map((check) => (
+          <Paper
+            key={check.id}
+            withBorder
+            p="sm"
+            style={{
+              borderLeftWidth: 3,
+              borderLeftColor: `var(--mantine-color-${statusColor(check.status)}-${check.status === 'skipped' ? '3' : '6'})`,
+            }}
+          >
+            <Group justify="space-between" wrap="nowrap">
+              <Group gap="sm" wrap="nowrap">
+                {statusIcon(check.status)}
+                <div>
+                  <Text size="sm" fw={500}>{check.name}</Text>
+                  <Text size="xs" c="dimmed">{check.description}</Text>
+                </div>
+              </Group>
+              {check.details && (
+                <Text
+                  size="xs"
+                  c={check.status === 'passed' ? 'green' : check.status === 'failed' ? 'red' : 'dimmed'}
+                  style={{ textAlign: 'right', maxWidth: '40%' }}
+                >
+                  {check.details}
+                </Text>
+              )}
+            </Group>
+          </Paper>
+        ))}
+      </Stack>
+    </Card>
+  );
+}
 
 function ValidationIssuesList({ issues }: { issues: ValidationIssue[] }) {
   if (issues.length === 0) {
@@ -733,6 +830,9 @@ export default function ExtractionPage() {
 
         {/* Unit Count Card */}
         <UnitCountCard extraction={{ ...extraction, extractedUnitCount: units.length }} />
+
+        {/* Verification Checks */}
+        <VerificationChecksCard summary={extraction.verificationSummary} />
 
         {/* Summary Statistics */}
         <SummaryStatsCard stats={extraction.summaryStats} statedStats={extraction.statedSummaryStats} />
