@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { parseRentRoll } from '@/lib/parsers';
 import { validateExtraction } from '@/lib/validation/validators';
+import { runVerificationChecks } from '@/lib/validation/verification';
 import { saveExtraction } from '@/lib/storage';
 import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import type { RentRollExtraction } from '@/lib/types';
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest) {
       summaryStats: null,
       statedSummaryStats: null,
       validationIssues: [],
+      verificationSummary: null,
       sourceType: fileName.endsWith('.pdf') ? 'pdf' : 'excel',
       sourceFormat: null,
       processingTimeMs: null,
@@ -81,6 +83,14 @@ export async function POST(request: NextRequest) {
         calculatedStats
       );
 
+      // Run verification checks
+      const verificationSummary = runVerificationChecks(
+        result.units,
+        result.statedUnitCount,
+        result.statedSummaryStats,
+        calculatedStats
+      );
+
       // Update extraction with results
       extraction.units = result.units;
       extraction.statedUnitCount = result.statedUnitCount;
@@ -93,6 +103,7 @@ export async function POST(request: NextRequest) {
       extraction.sourceFormat = result.sourceFormat;
       extraction.pageCount = result.pageCount;
       extraction.validationIssues = issues;
+      extraction.verificationSummary = verificationSummary;
       extraction.summaryStats = calculatedStats;
       extraction.processedAt = new Date().toISOString();
       extraction.processingTimeMs = Date.now() - startTime;

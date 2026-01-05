@@ -63,6 +63,25 @@ export const StatedSummaryStatsSchema = z.object({
   vacantUnits: z.number().nullable(),
 });
 
+// Verification check (like a unit test result)
+export const VerificationCheckSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  status: z.enum(['passed', 'failed', 'skipped']),
+  details: z.string().optional(),
+});
+
+// Verification summary
+export const VerificationSummarySchema = z.object({
+  confidence: z.enum(['high', 'medium', 'low']),
+  passed: z.number(),
+  failed: z.number(),
+  skipped: z.number(),
+  total: z.number(),
+  checks: z.array(VerificationCheckSchema),
+});
+
 export const RentRollExtractionSchema = z.object({
   id: z.string().uuid(),
   fileName: z.string(),
@@ -81,6 +100,7 @@ export const RentRollExtractionSchema = z.object({
   statedSummaryStats: StatedSummaryStatsSchema.nullable(),
 
   validationIssues: z.array(ValidationIssueSchema),
+  verificationSummary: VerificationSummarySchema.nullable(),
 
   sourceType: z.enum(['excel', 'pdf']),
   sourceFormat: z.string().nullable(),

@@ -58,6 +58,25 @@ export interface StatedSummaryStats {
   vacantUnits: number | null;
 }
 
+// Verification check result (like a unit test)
+export interface VerificationCheck {
+  id: string;
+  name: string;
+  description: string;
+  status: 'passed' | 'failed' | 'skipped';  // skipped = no stated value to compare
+  details?: string;  // Additional context for the result
+}
+
+// Overall verification summary
+export interface VerificationSummary {
+  confidence: 'high' | 'medium' | 'low';
+  passed: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  checks: VerificationCheck[];
+}
+
 export interface RentRollExtraction {
   id: string;
   fileName: string;
@@ -82,6 +101,9 @@ export interface RentRollExtraction {
 
   // Validation results
   validationIssues: ValidationIssue[];
+
+  // Verification checks (like unit tests)
+  verificationSummary: VerificationSummary | null;
 
   // Extraction metadata
   sourceType: 'excel' | 'pdf';
