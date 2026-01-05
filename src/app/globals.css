@@ -4,11 +4,42 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8f9fa;
+  --foreground: #212529;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Better focus styles */
+:focus-visible {
+  outline: 2px solid var(--mantine-color-brand-5);
+  outline-offset: 2px;
+}
+
+/* Table improvements */
+.mantine-Table-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+/* AG Grid theme adjustments */
+.ag-theme-quartz {
+  --ag-border-radius: 8px;
+  --ag-row-hover-color: rgba(0, 170, 157, 0.08);
 }
