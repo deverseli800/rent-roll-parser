@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { ColorSchemeScript, MantineProvider } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
+import { AppHeader } from "@/components/AppHeader";
+import { theme } from "@/lib/theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,9 +21,12 @@ export default function RootLayout({
         <ColorSchemeScript />
       </head>
       <body>
-        <MantineProvider>
+        <MantineProvider theme={theme}>
           <Notifications position="top-right" />
-          {children}
+          <AppHeader />
+          <main style={{ minHeight: 'calc(100vh - 60px)', backgroundColor: '#f8f9fa' }}>
+            {children}
+          </main>
         </MantineProvider>
       </body>
     </html>

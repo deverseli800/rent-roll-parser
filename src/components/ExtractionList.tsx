@@ -1,7 +1,7 @@
 'use client';
 
-import { Table, Badge, Group, Text, ActionIcon, Tooltip } from '@mantine/core';
-import { IconEye, IconTrash } from '@tabler/icons-react';
+import { Table, Badge, Group, Text, ActionIcon, Tooltip, Stack, ThemeIcon, Box } from '@mantine/core';
+import { IconEye, IconTrash, IconFileSpreadsheet } from '@tabler/icons-react';
 import type { ExtractionSummary } from '@/lib/types';
 
 interface ExtractionListProps {
@@ -72,28 +72,39 @@ function getCountBadge(extraction: ExtractionSummary) {
 export function ExtractionList({ extractions, onView, onDelete }: ExtractionListProps) {
   if (extractions.length === 0) {
     return (
-      <Text c="dimmed" ta="center" py="xl">
-        No extractions yet. Upload a rent roll to get started.
-      </Text>
+      <Stack align="center" py="xl" gap="md">
+        <ThemeIcon size={64} radius="xl" variant="light" color="gray">
+          <IconFileSpreadsheet size={32} />
+        </ThemeIcon>
+        <div style={{ textAlign: 'center' }}>
+          <Text fw={500} size="lg" c="dimmed">
+            No extractions yet
+          </Text>
+          <Text size="sm" c="dimmed">
+            Upload a rent roll above to get started
+          </Text>
+        </div>
+      </Stack>
     );
   }
 
   return (
-    <Table striped highlightOnHover>
-      <Table.Thead>
-        <Table.Tr>
-          <Table.Th>File Name</Table.Th>
-          <Table.Th>Property</Table.Th>
-          <Table.Th>Units</Table.Th>
-          <Table.Th>Issues</Table.Th>
-          <Table.Th>Status</Table.Th>
-          <Table.Th>Model</Table.Th>
-          <Table.Th>Tokens</Table.Th>
-          <Table.Th>Time</Table.Th>
-          <Table.Th>Uploaded</Table.Th>
-          <Table.Th>Actions</Table.Th>
-        </Table.Tr>
-      </Table.Thead>
+    <Box style={{ overflowX: 'auto' }}>
+      <Table striped highlightOnHover verticalSpacing="sm">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>File Name</Table.Th>
+            <Table.Th>Property</Table.Th>
+            <Table.Th>Units</Table.Th>
+            <Table.Th>Issues</Table.Th>
+            <Table.Th>Status</Table.Th>
+            <Table.Th>Model</Table.Th>
+            <Table.Th>Tokens</Table.Th>
+            <Table.Th>Time</Table.Th>
+            <Table.Th>Uploaded</Table.Th>
+            <Table.Th>Actions</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
       <Table.Tbody>
         {extractions.map((extraction) => (
           <Table.Tr key={extraction.id}>
@@ -169,6 +180,7 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
           </Table.Tr>
         ))}
       </Table.Tbody>
-    </Table>
+      </Table>
+    </Box>
   );
 }
