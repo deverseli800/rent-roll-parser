@@ -22,6 +22,7 @@ import {
   ActionIcon,
   Collapse,
   UnstyledButton,
+  Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -472,6 +473,7 @@ export default function ExtractionPage() {
   const [saving, setSaving] = useState(false);
   const [units, setUnits] = useState<MVPUnit[]>([]);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [showAllColumns, setShowAllColumns] = useState(false);
   const [newUnit, setNewUnit] = useState<Partial<MVPUnit>>({
     unitNumber: '',
     status: 'vacant',
@@ -608,131 +610,159 @@ export default function ExtractionPage() {
     setUnits(prevUnits => prevUnits.filter((_, i) => i !== index));
   }, []);
 
+  // Detect which optional columns have data
+  const columnsWithData = useMemo(() => {
+    const optionalFields = ['unitType', 'unitSqft', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
+    const hasData: Record<string, boolean> = {};
+
+    for (const field of optionalFields) {
+      hasData[field] = units.some(unit => unit[field] !== null && unit[field] !== undefined && unit[field] !== '');
+    }
+
+    return hasData;
+  }, [units]);
+
   // AG Grid column definitions
-  const columnDefs = useMemo<ColDef<MVPUnit>[]>(() => [
-    {
-      field: 'unitNumber',
-      headerName: 'Unit #',
-      width: 100,
-      editable: true,
-      pinned: 'left',
-    },
-    {
-      field: 'status',
-      headerName: 'Status',
-      width: 120,
-      editable: true,
-      cellEditor: 'agSelectCellEditor',
-      cellEditorParams: {
-        values: ['occupied', 'vacant', 'notice', 'model', 'down', 'applicant'],
+  const columnDefs = useMemo<ColDef<MVPUnit>[]>(() => {
+    const allColumns: (ColDef<MVPUnit> & { field?: string })[] = [
+      {
+        field: 'unitNumber',
+        headerName: 'Unit #',
+        width: 100,
+        editable: true,
+        pinned: 'left',
       },
-      cellStyle: (params) => {
-        const colors: Record<string, string> = {
-          occupied: '#d3f9d8',
-          vacant: '#ffe3e3',
-          notice: '#fff3bf',
-          model: '#d0ebff',
-          down: '#e9ecef',
-          applicant: '#e5dbff',
-        };
-        return { backgroundColor: colors[params.value] || 'transparent' };
+      {
+        field: 'status',
+        headerName: 'Status',
+        width: 120,
+        editable: true,
+        cellEditor: 'agSelectCellEditor',
+        cellEditorParams: {
+          values: ['occupied', 'vacant', 'notice', 'model', 'down', 'applicant'],
+        },
+        cellStyle: (params) => {
+          const colors: Record<string, string> = {
+            occupied: '#d3f9d8',
+            vacant: '#ffe3e3',
+            notice: '#fff3bf',
+            model: '#d0ebff',
+            down: '#e9ecef',
+            applicant: '#e5dbff',
+          };
+          return { backgroundColor: colors[params.value] || 'transparent' };
+        },
       },
-    },
-    {
-      field: 'unitType',
-      headerName: 'Type',
-      width: 100,
-      editable: true,
-    },
-    {
-      field: 'unitSqft',
-      headerName: 'Sqft',
-      width: 80,
-      editable: true,
-      type: 'numericColumn',
-      valueParser: (params) => {
-        const val = Number(params.newValue);
-        return isNaN(val) ? null : val;
+      {
+        field: 'unitType',
+        headerName: 'Type',
+        width: 100,
+        editable: true,
       },
-    },
-    {
-      field: 'monthlyRent',
-      headerName: 'Rent',
-      width: 100,
-      editable: true,
-      type: 'numericColumn',
-      valueFormatter: (params) => {
-        if (params.value == null) return '';
-        return new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          minimumFractionDigits: 0,
-        }).format(params.value);
+      {
+        field: 'unitSqft',
+        headerName: 'Sqft',
+        width: 80,
+        editable: true,
+        type: 'numericColumn',
+        valueParser: (params) => {
+          const val = Number(params.newValue);
+          return isNaN(val) ? null : val;
+        },
       },
-      valueParser: (params) => {
-        const val = Number(String(params.newValue).replace(/[$,]/g, ''));
-        return isNaN(val) ? null : val;
+      {
+        field: 'monthlyRent',
+        headerName: 'Rent',
+        width: 100,
+        editable: true,
+        type: 'numericColumn',
+        valueFormatter: (params) => {
+          if (params.value == null) return '';
+          return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 0,
+          }).format(params.value);
+        },
+        valueParser: (params) => {
+          const val = Number(String(params.newValue).replace(/[$,]/g, ''));
+          return isNaN(val) ? null : val;
+        },
       },
-    },
-    {
-      field: 'tenantName',
-      headerName: 'Tenant',
-      minWidth: 180,
-      flex: 1,
-      editable: true,
-    },
-    {
-      field: 'leaseStartDate',
-      headerName: 'Lease Start',
-      width: 120,
-      editable: true,
-    },
-    {
-      field: 'leaseEndDate',
-      headerName: 'Lease End',
-      width: 120,
-      editable: true,
-    },
-    {
-      field: 'moveInDate',
-      headerName: 'Move In',
-      width: 120,
-      editable: true,
-    },
-    {
-      field: 'moveOutDate',
-      headerName: 'Move Out',
-      width: 120,
-      editable: true,
-    },
-    {
-      field: 'leaseStatus',
-      headerName: 'Lease Status',
-      width: 120,
-      editable: true,
-    },
-    {
-      headerName: '',
-      width: 70,
-      pinned: 'right',
-      cellRenderer: (params: { node: { rowIndex: number | null } }) => {
-        const rowIndex = params.node.rowIndex;
-        if (rowIndex === null) return null;
-        return (
-          <ActionIcon
-            color="red"
-            variant="subtle"
-            size="sm"
-            onClick={() => handleDeleteUnit(rowIndex)}
-          >
-            <IconTrash size={14} />
-          </ActionIcon>
-        );
+      {
+        field: 'tenantName',
+        headerName: 'Tenant',
+        minWidth: 180,
+        flex: 1,
+        editable: true,
       },
-      sortable: false,
-      filter: false,
-    },
-  ], [handleDeleteUnit]);
+      {
+        field: 'leaseStartDate',
+        headerName: 'Lease Start',
+        width: 120,
+        editable: true,
+      },
+      {
+        field: 'leaseEndDate',
+        headerName: 'Lease End',
+        width: 120,
+        editable: true,
+      },
+      {
+        field: 'moveInDate',
+        headerName: 'Move In',
+        width: 120,
+        editable: true,
+      },
+      {
+        field: 'moveOutDate',
+        headerName: 'Move Out',
+        width: 120,
+        editable: true,
+      },
+      {
+        field: 'leaseStatus',
+        headerName: 'Lease Status',
+        width: 120,
+        editable: true,
+      },
+      {
+        headerName: '',
+        width: 70,
+        pinned: 'right',
+        cellRenderer: (params: { node: { rowIndex: number | null } }) => {
+          const rowIndex = params.node.rowIndex;
+          if (rowIndex === null) return null;
+          return (
+            <ActionIcon
+              color="red"
+              variant="subtle"
+              size="sm"
+              onClick={() => handleDeleteUnit(rowIndex)}
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          );
+        },
+        sortable: false,
+        filter: false,
+      },
+    ];
+
+    // Always show: unitNumber, status, monthlyRent, and delete button
+    const alwaysShowFields = ['unitNumber', 'status', 'monthlyRent', undefined]; // undefined = delete column
+
+    if (showAllColumns) {
+      return allColumns;
+    }
+
+    // Filter to only show columns with data
+    return allColumns.filter(col => {
+      if (alwaysShowFields.includes(col.field)) return true;
+      if (!col.field) return true; // Keep columns without field (like delete)
+      return columnsWithData[col.field];
+    });
+  }, [handleDeleteUnit, showAllColumns, columnsWithData]);
 
   const defaultColDef = useMemo<ColDef>(() => ({
     sortable: true,
@@ -861,13 +891,21 @@ export default function ExtractionPage() {
         <Paper withBorder p="md">
           <Group justify="space-between" mb="md">
             <Title order={4}>Units ({units.length})</Title>
-            <Button
-              size="sm"
-              leftSection={<IconPlus size={16} />}
-              onClick={() => setAddModalOpen(true)}
-            >
-              Add Unit
-            </Button>
+            <Group gap="md">
+              <Switch
+                label="Show all columns"
+                checked={showAllColumns}
+                onChange={(e) => setShowAllColumns(e.currentTarget.checked)}
+                size="sm"
+              />
+              <Button
+                size="sm"
+                leftSection={<IconPlus size={16} />}
+                onClick={() => setAddModalOpen(true)}
+              >
+                Add Unit
+              </Button>
+            </Group>
           </Group>
 
           <div style={{ height: 600, width: '100%' }}>
