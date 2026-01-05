@@ -20,6 +20,8 @@ import {
   Select,
   NumberInput,
   ActionIcon,
+  Collapse,
+  UnstyledButton,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -33,6 +35,8 @@ import {
   IconX,
   IconMinus,
   IconShieldCheck,
+  IconChevronDown,
+  IconChevronRight,
 } from '@tabler/icons-react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
@@ -52,6 +56,8 @@ const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
 ];
 
 function VerificationChecksCard({ summary }: { summary: VerificationSummary | null }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (!summary) {
     return null;
   }
@@ -89,58 +95,66 @@ function VerificationChecksCard({ summary }: { summary: VerificationSummary | nu
 
   return (
     <Card withBorder p="md">
-      <Group justify="space-between" mb="md">
-        <Group gap="sm">
-          <IconShieldCheck size={24} />
-          <Title order={5}>Verification Checks</Title>
+      <UnstyledButton
+        onClick={() => setExpanded(!expanded)}
+        style={{ width: '100%' }}
+      >
+        <Group justify="space-between">
+          <Group gap="sm">
+            {expanded ? <IconChevronDown size={20} /> : <IconChevronRight size={20} />}
+            <IconShieldCheck size={24} />
+            <Title order={5}>Verification Checks</Title>
+          </Group>
+          <Group gap="md">
+            <Text size="sm" c="dimmed">
+              {summary.passed}/{summary.total - summary.skipped} passed
+              {summary.skipped > 0 && ` (${summary.skipped} skipped)`}
+            </Text>
+            <Badge
+              size="lg"
+              color={confidenceColors[summary.confidence]}
+              variant="light"
+            >
+              {confidenceLabels[summary.confidence]}
+            </Badge>
+          </Group>
         </Group>
-        <Group gap="md">
-          <Text size="sm" c="dimmed">
-            {summary.passed}/{summary.total - summary.skipped} passed
-            {summary.skipped > 0 && ` (${summary.skipped} skipped)`}
-          </Text>
-          <Badge
-            size="lg"
-            color={confidenceColors[summary.confidence]}
-            variant="light"
-          >
-            {confidenceLabels[summary.confidence]}
-          </Badge>
-        </Group>
-      </Group>
+      </UnstyledButton>
 
-      <Stack gap="xs">
-        {summary.checks.map((check) => (
-          <Paper
-            key={check.id}
-            withBorder
-            p="sm"
-            style={{
-              borderLeftWidth: 3,
-              borderLeftColor: `var(--mantine-color-${statusColor(check.status)}-${check.status === 'skipped' ? '3' : '6'})`,
-            }}
-          >
-            <Group justify="space-between" wrap="nowrap">
-              <Group gap="sm" wrap="nowrap">
-                {statusIcon(check.status)}
-                <div>
-                  <Text size="sm" fw={500}>{check.name}</Text>
-                  <Text size="xs" c="dimmed">{check.description}</Text>
-                </div>
+      <Collapse in={expanded}>
+        <Stack gap="xs" mt="md">
+          {summary.checks.map((check) => (
+            <Paper
+              key={check.id}
+              withBorder
+              p="sm"
+              style={{
+                borderLeftWidth: 3,
+                borderLeftColor: `var(--mantine-color-${statusColor(check.status)}-${check.status === 'skipped' ? '3' : '6'})`,
+              }}
+            >
+              <Group justify="space-between" wrap="nowrap">
+                <Group gap="sm" wrap="nowrap">
+                  {statusIcon(check.status)}
+                  <div>
+                    <Text size="sm" fw={500}>{check.name}</Text>
+                    <Text size="xs" c="dimmed">{check.description}</Text>
+                  </div>
+                </Group>
+                {check.details && (
+                  <Text
+                    size="xs"
+                    c={check.status === 'passed' ? 'green' : check.status === 'failed' ? 'red' : 'dimmed'}
+                    style={{ textAlign: 'right', maxWidth: '40%' }}
+                  >
+                    {check.details}
+                  </Text>
+                )}
               </Group>
-              {check.details && (
-                <Text
-                  size="xs"
-                  c={check.status === 'passed' ? 'green' : check.status === 'failed' ? 'red' : 'dimmed'}
-                  style={{ textAlign: 'right', maxWidth: '40%' }}
-                >
-                  {check.details}
-                </Text>
-              )}
-            </Group>
-          </Paper>
-        ))}
-      </Stack>
+            </Paper>
+          ))}
+        </Stack>
+      </Collapse>
     </Card>
   );
 }
