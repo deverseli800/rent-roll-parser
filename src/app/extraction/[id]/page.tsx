@@ -756,23 +756,11 @@ export default function ExtractionPage() {
     }
 
     // Filter to only show columns with data
-    const filteredColumns = allColumns.filter(col => {
+    return allColumns.filter(col => {
       if (alwaysShowFields.includes(col.field)) return true;
       if (!col.field) return true; // Keep columns without field (like delete)
       return columnsWithData[col.field];
     });
-
-    // Make the last data column (before delete) flex to fill remaining space
-    const lastDataIndex = filteredColumns.length - 2; // -1 for delete, -1 for 0-index
-    if (lastDataIndex >= 0 && filteredColumns[lastDataIndex]) {
-      filteredColumns[lastDataIndex] = {
-        ...filteredColumns[lastDataIndex],
-        flex: 1,
-        minWidth: filteredColumns[lastDataIndex].width || 100,
-      };
-    }
-
-    return filteredColumns;
   }, [handleDeleteUnit, showAllColumns, columnsWithData]);
 
   const defaultColDef = useMemo<ColDef>(() => ({
