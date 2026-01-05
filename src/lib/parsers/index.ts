@@ -1,10 +1,11 @@
 import { parseExcel } from './excel';
 import { parsePDF } from './pdf';
-import type { MVPUnit } from '../types';
+import type { MVPUnit, StatedSummaryStats } from '../types';
 
 export interface ParseResult {
   units: MVPUnit[];
   statedUnitCount: number | null;
+  statedSummaryStats: StatedSummaryStats | null;
   propertyName: string | null;
   sourceType: 'excel' | 'pdf';
   sourceFormat: string;
@@ -29,6 +30,7 @@ export async function parseRentRoll(
     return {
       units: result.units,
       statedUnitCount: result.statedUnitCount,
+      statedSummaryStats: result.statedSummaryStats,
       propertyName: null, // Excel parser doesn't extract property name yet
       sourceType: 'excel',
       sourceFormat: result.format,
@@ -44,6 +46,7 @@ export async function parseRentRoll(
     return {
       units: result.units,
       statedUnitCount: result.statedUnitCount,
+      statedSummaryStats: result.statedSummaryStats,
       propertyName: result.propertyName,
       sourceType: 'pdf',
       sourceFormat: result.format,

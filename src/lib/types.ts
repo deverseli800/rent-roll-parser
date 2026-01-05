@@ -23,7 +23,7 @@ export interface MVPUnit {
 }
 
 export interface ValidationIssue {
-  type: 'duplicate' | 'gap' | 'count_mismatch' | 'missing_unit_number' | 'suspicious';
+  type: 'duplicate' | 'gap' | 'count_mismatch' | 'missing_unit_number' | 'suspicious' | 'summary_mismatch';
   severity: 'critical' | 'warning' | 'info';
   message: string;
   unitNumbers?: string[];
@@ -48,6 +48,16 @@ export interface SummaryStats {
   averageRentPerSqft: number | null;
 }
 
+// Stated summary values extracted from the document (not calculated)
+export interface StatedSummaryStats {
+  totalUnits: number | null;
+  totalMonthlyRent: number | null;
+  totalSqft: number | null;
+  occupancyRate: number | null;      // Percentage if stated in document
+  occupiedUnits: number | null;
+  vacantUnits: number | null;
+}
+
 export interface RentRollExtraction {
   id: string;
   fileName: string;
@@ -66,6 +76,9 @@ export interface RentRollExtraction {
 
   // Summary statistics (calculated from units)
   summaryStats: SummaryStats | null;
+
+  // Stated summary values from document (for validation)
+  statedSummaryStats: StatedSummaryStats | null;
 
   // Validation results
   validationIssues: ValidationIssue[];

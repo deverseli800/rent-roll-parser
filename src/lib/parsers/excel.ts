@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import type { MVPUnit, UnitStatus } from '../types';
+import type { MVPUnit, UnitStatus, StatedSummaryStats } from '../types';
 
 /**
  * AI-Assisted Excel Parser
@@ -31,6 +31,14 @@ const ColumnMappingResponseSchema = z.object({
     leaseEndDate: z.number().nullable().describe('Column index for lease end date'),
   }),
   statedUnitCount: z.number().nullable().describe('Total unit count if stated in the document'),
+  // Stated summary values from document
+  statedSummary: z.object({
+    totalMonthlyRent: z.number().nullable().describe('Total monthly rent if stated in summary/totals row'),
+    totalSqft: z.number().nullable().describe('Total square footage if stated'),
+    occupancyRate: z.number().nullable().describe('Occupancy rate/percentage if stated'),
+    occupiedUnits: z.number().nullable().describe('Number of occupied units if stated'),
+    vacantUnits: z.number().nullable().describe('Number of vacant units if stated'),
+  }).optional(),
   dataStartRow: z.number().describe('0-indexed row where actual unit data begins'),
   dataEndRow: z.number().nullable().describe('0-indexed row where unit data ends (before summary sections). null if no summary section found'),
   skipPatterns: z.array(z.string()).describe('Text patterns that indicate non-unit rows (section headers, totals)'),
@@ -169,9 +177,15 @@ Your task:
    - leaseEndDate: Lease end (look for "Lease End", "Lease To", "Lease Expiration", "End Date")
 
 3. Find any stated total unit count (e.g., "Total Units: 156", "208 units", "totals / averages:" row with a count)
-4. Identify the row where actual unit data starts (after headers)
-5. Identify the row where unit data ENDS - look for summary sections like "Unit Type Occupancy", "Total", "Summary", "Totals", etc. in the LAST ROWS section
-6. List text patterns that indicate rows to skip
+4. EXTRACT STATED SUMMARY VALUES from totals/summary rows (look in LAST ROWS section):
+   - totalMonthlyRent: Sum of all rents (look for "Total Monthly", "Total Rent", "Grand Total" in rent column)
+   - totalSqft: Sum of square footage if stated
+   - occupancyRate: Occupancy percentage if stated (e.g., "95% Occupied")
+   - occupiedUnits: Count of occupied units if stated
+   - vacantUnits: Count of vacant units if stated
+5. Identify the row where actual unit data starts (after headers)
+6. Identify the row where unit data ENDS - look for summary sections like "Unit Type Occupancy", "Total", "Summary", "Totals", etc. in the LAST ROWS section
+7. List text patterns that indicate rows to skip
 
 CRITICAL - DISTINGUISHING UNITS FROM SUMMARY DATA:
 - Real unit numbers are specific identifiers like "101", "111", "A-201", "6435-1E"
@@ -207,6 +221,13 @@ Respond with ONLY valid JSON matching this structure:
     "leaseEndDate": <column index or null>
   },
   "statedUnitCount": <number or null>,
+  "statedSummary": {
+    "totalMonthlyRent": <stated total rent from totals row or null>,
+    "totalSqft": <stated total sqft or null>,
+    "occupancyRate": <stated occupancy percentage or null>,
+    "occupiedUnits": <stated occupied count or null>,
+    "vacantUnits": <stated vacant count or null>
+  },
   "dataStartRow": <0-indexed row where unit data begins>,
   "dataEndRow": <0-indexed row where unit data ends, BEFORE any summary sections like "Unit Type Occupancy" or "Total". null if no summary section found>,
   "skipPatterns": ["pattern1", "pattern2"],
@@ -379,6 +400,7 @@ function isValidUnitNumber(value: unknown): boolean {
 export async function parseExcel(buffer: Buffer): Promise<{
   units: MVPUnit[];
   statedUnitCount: number | null;
+  statedSummaryStats: StatedSummaryStats | null;
   format: string;
   modelUsed: string;
   inputTokens: number;
@@ -509,9 +531,27 @@ export async function parseExcel(buffer: Buffer): Promise<{
     units.push(unit);
   }
 
+  // Build stated summary stats
+  const statedSummaryStats: StatedSummaryStats | null = mapping.statedSummary ? {
+    totalUnits: mapping.statedUnitCount ?? null,
+    totalMonthlyRent: mapping.statedSummary.totalMonthlyRent ?? null,
+    totalSqft: mapping.statedSummary.totalSqft ?? null,
+    occupancyRate: mapping.statedSummary.occupancyRate ?? null,
+    occupiedUnits: mapping.statedSummary.occupiedUnits ?? null,
+    vacantUnits: mapping.statedSummary.vacantUnits ?? null,
+  } : (mapping.statedUnitCount ? {
+    totalUnits: mapping.statedUnitCount,
+    totalMonthlyRent: null,
+    totalSqft: null,
+    occupancyRate: null,
+    occupiedUnits: null,
+    vacantUnits: null,
+  } : null);
+
   return {
     units,
     statedUnitCount: mapping.statedUnitCount,
+    statedSummaryStats,
     format: `ai-mapped (header row ${mapping.headerRow})`,
     modelUsed: aiResponse.modelUsed,
     inputTokens: aiResponse.inputTokens,

@@ -1,4 +1,4 @@
-import type { MVPUnit, ValidationIssue } from '../types';
+import type { MVPUnit, ValidationIssue, StatedSummaryStats, SummaryStats } from '../types';
 
 /**
  * MVP Validation - Focused on unit count accuracy
@@ -191,11 +191,120 @@ export function checkSuspiciousPatterns(units: MVPUnit[]): ValidationIssue[] {
 }
 
 /**
+ * Compare stated summary stats from document against calculated values
+ * Flag significant mismatches that may indicate extraction errors
+ */
+export function checkSummaryMismatch(
+  statedStats: StatedSummaryStats | null,
+  calculatedStats: SummaryStats | null
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  if (!statedStats || !calculatedStats) {
+    return issues;
+  }
+
+  // Check total monthly rent mismatch (allow 1% tolerance for rounding)
+  if (statedStats.totalMonthlyRent !== null && calculatedStats.totalMonthlyRent !== null && calculatedStats.totalMonthlyRent > 0) {
+    const diff = Math.abs(statedStats.totalMonthlyRent - calculatedStats.totalMonthlyRent);
+    const tolerance = statedStats.totalMonthlyRent * 0.01; // 1% tolerance
+    if (diff > tolerance && diff > 1) { // Also ignore differences under $1
+      issues.push({
+        type: 'summary_mismatch',
+        severity: 'warning',
+        message: `Total rent mismatch: Document states $${statedStats.totalMonthlyRent.toLocaleString()} but calculated $${calculatedStats.totalMonthlyRent.toLocaleString()} (diff: $${diff.toFixed(2)})`,
+        details: {
+          field: 'totalMonthlyRent',
+          stated: statedStats.totalMonthlyRent,
+          calculated: calculatedStats.totalMonthlyRent,
+          difference: diff,
+        },
+      });
+    }
+  }
+
+  // Check total sqft mismatch (allow 1% tolerance)
+  if (statedStats.totalSqft !== null && calculatedStats.totalSqft !== null && calculatedStats.totalSqft > 0) {
+    const diff = Math.abs(statedStats.totalSqft - calculatedStats.totalSqft);
+    const tolerance = statedStats.totalSqft * 0.01;
+    if (diff > tolerance && diff > 10) { // Ignore differences under 10 sqft
+      issues.push({
+        type: 'summary_mismatch',
+        severity: 'warning',
+        message: `Total sqft mismatch: Document states ${statedStats.totalSqft.toLocaleString()} but calculated ${calculatedStats.totalSqft.toLocaleString()} (diff: ${diff})`,
+        details: {
+          field: 'totalSqft',
+          stated: statedStats.totalSqft,
+          calculated: calculatedStats.totalSqft,
+          difference: diff,
+        },
+      });
+    }
+  }
+
+  // Check occupied unit count mismatch
+  if (statedStats.occupiedUnits !== null) {
+    if (statedStats.occupiedUnits !== calculatedStats.occupiedUnits) {
+      issues.push({
+        type: 'summary_mismatch',
+        severity: 'warning',
+        message: `Occupied count mismatch: Document states ${statedStats.occupiedUnits} but extracted ${calculatedStats.occupiedUnits}`,
+        details: {
+          field: 'occupiedUnits',
+          stated: statedStats.occupiedUnits,
+          calculated: calculatedStats.occupiedUnits,
+          difference: statedStats.occupiedUnits - calculatedStats.occupiedUnits,
+        },
+      });
+    }
+  }
+
+  // Check vacant unit count mismatch
+  if (statedStats.vacantUnits !== null) {
+    if (statedStats.vacantUnits !== calculatedStats.vacantUnits) {
+      issues.push({
+        type: 'summary_mismatch',
+        severity: 'warning',
+        message: `Vacant count mismatch: Document states ${statedStats.vacantUnits} but extracted ${calculatedStats.vacantUnits}`,
+        details: {
+          field: 'vacantUnits',
+          stated: statedStats.vacantUnits,
+          calculated: calculatedStats.vacantUnits,
+          difference: statedStats.vacantUnits - calculatedStats.vacantUnits,
+        },
+      });
+    }
+  }
+
+  // Check occupancy rate mismatch (allow 1% tolerance)
+  if (statedStats.occupancyRate !== null && calculatedStats.physicalOccupancy !== null && calculatedStats.physicalOccupancy > 0) {
+    const diff = Math.abs(statedStats.occupancyRate - calculatedStats.physicalOccupancy);
+    if (diff > 1) { // More than 1% difference
+      issues.push({
+        type: 'summary_mismatch',
+        severity: 'info',
+        message: `Occupancy rate mismatch: Document states ${statedStats.occupancyRate.toFixed(1)}% but calculated ${calculatedStats.physicalOccupancy.toFixed(1)}%`,
+        details: {
+          field: 'occupancyRate',
+          stated: statedStats.occupancyRate,
+          calculated: calculatedStats.physicalOccupancy,
+          difference: diff,
+        },
+      });
+    }
+  }
+
+  return issues;
+}
+
+/**
  * Run all MVP validations
  */
 export function validateExtraction(
   units: MVPUnit[],
-  statedCount: number | null
+  statedCount: number | null,
+  statedStats?: StatedSummaryStats | null,
+  calculatedStats?: SummaryStats | null
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -211,6 +320,11 @@ export function validateExtraction(
   // Warning-level validations
   issues.push(...detectGaps(units));
   issues.push(...checkSuspiciousPatterns(units));
+
+  // Summary stat validations
+  if (statedStats && calculatedStats) {
+    issues.push(...checkSummaryMismatch(statedStats, calculatedStats));
+  }
 
   // Sort by severity (critical first)
   const severityOrder = { critical: 0, warning: 1, info: 2 };

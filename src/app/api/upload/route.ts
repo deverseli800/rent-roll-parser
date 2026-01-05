@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
       extractedUnitCount: 0,
       countMatch: null,
       summaryStats: null,
+      statedSummaryStats: null,
       validationIssues: [],
       sourceType: fileName.endsWith('.pdf') ? 'pdf' : 'excel',
       sourceFormat: null,
@@ -69,12 +70,21 @@ export async function POST(request: NextRequest) {
       // Parse the file
       const result = await parseRentRoll(buffer, file.name);
 
-      // Run validation
-      const issues = validateExtraction(result.units, result.statedUnitCount);
+      // Calculate summary stats
+      const calculatedStats = calculateSummaryStats(result.units);
+
+      // Run validation (including stated vs calculated comparison)
+      const issues = validateExtraction(
+        result.units,
+        result.statedUnitCount,
+        result.statedSummaryStats,
+        calculatedStats
+      );
 
       // Update extraction with results
       extraction.units = result.units;
       extraction.statedUnitCount = result.statedUnitCount;
+      extraction.statedSummaryStats = result.statedSummaryStats;
       extraction.extractedUnitCount = result.units.length;
       extraction.countMatch = result.statedUnitCount !== null
         ? result.units.length === result.statedUnitCount
@@ -83,7 +93,7 @@ export async function POST(request: NextRequest) {
       extraction.sourceFormat = result.sourceFormat;
       extraction.pageCount = result.pageCount;
       extraction.validationIssues = issues;
-      extraction.summaryStats = calculateSummaryStats(result.units);
+      extraction.summaryStats = calculatedStats;
       extraction.processedAt = new Date().toISOString();
       extraction.processingTimeMs = Date.now() - startTime;
       extraction.status = issues.some(i => i.severity === 'critical') ? 'review' : 'review';

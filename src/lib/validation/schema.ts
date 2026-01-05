@@ -30,7 +30,7 @@ export const MVPUnitSchema = z.object({
 });
 
 export const ValidationIssueSchema = z.object({
-  type: z.enum(['duplicate', 'gap', 'count_mismatch', 'missing_unit_number', 'suspicious']),
+  type: z.enum(['duplicate', 'gap', 'count_mismatch', 'missing_unit_number', 'suspicious', 'summary_mismatch']),
   severity: z.enum(['critical', 'warning', 'info']),
   message: z.string(),
   unitNumbers: z.array(z.string()).optional(),
@@ -53,6 +53,16 @@ export const SummaryStatsSchema = z.object({
   averageRentPerSqft: z.number().nullable(),
 });
 
+// Stated summary values extracted from document (not calculated)
+export const StatedSummaryStatsSchema = z.object({
+  totalUnits: z.number().nullable(),
+  totalMonthlyRent: z.number().nullable(),
+  totalSqft: z.number().nullable(),
+  occupancyRate: z.number().nullable(),
+  occupiedUnits: z.number().nullable(),
+  vacantUnits: z.number().nullable(),
+});
+
 export const RentRollExtractionSchema = z.object({
   id: z.string().uuid(),
   fileName: z.string(),
@@ -68,6 +78,7 @@ export const RentRollExtractionSchema = z.object({
   countMatch: z.boolean().nullable(),
 
   summaryStats: SummaryStatsSchema.nullable(),
+  statedSummaryStats: StatedSummaryStatsSchema.nullable(),
 
   validationIssues: z.array(ValidationIssueSchema),
 
@@ -89,6 +100,14 @@ export const RentRollExtractionSchema = z.object({
 export const ClaudeExtractionResponseSchema = z.object({
   propertyName: z.string().nullable().optional(),
   statedTotalUnits: z.number().nullable().optional(),
+  // Stated summary values from document
+  statedSummary: z.object({
+    totalMonthlyRent: z.number().nullable().optional(),
+    totalSqft: z.number().nullable().optional(),
+    occupancyRate: z.number().nullable().optional(),
+    occupiedUnits: z.number().nullable().optional(),
+    vacantUnits: z.number().nullable().optional(),
+  }).optional(),
   units: z.array(z.object({
     unitNumber: z.string(),
     status: z.string(),
