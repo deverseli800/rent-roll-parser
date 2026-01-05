@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { MVPUnit, UnitStatus } from '../types';
+import type { MVPUnit, UnitStatus, StatedSummaryStats } from '../types';
 import { ClaudeExtractionResponseSchema } from '../validation/schema';
 
 /**
@@ -9,7 +9,18 @@ import { ClaudeExtractionResponseSchema } from '../validation/schema';
 
 const MVP_EXTRACTION_PROMPT = `You are extracting unit data from a rent roll document. Your PRIMARY goal is accurate unit count - do not miss ANY units and do not hallucinate units that don't exist.
 
-STEP 1: Look for the total unit count stated in the document (e.g., "Total Units: 156", summary row, or property info section). If found, report this number.
+STEP 1: Look for STATED SUMMARY VALUES in the document. These are typically in:
+- Header/footer sections (e.g., "Total Units: 156")
+- Summary rows at the bottom (e.g., "Total Monthly Rent: $64,107.72")
+- Property info sections
+
+Look for these stated values:
+- Total unit count
+- Total monthly rent (sum of all rents)
+- Total square footage
+- Occupancy rate/percentage
+- Number of occupied units
+- Number of vacant units
 
 STEP 2: Extract ALL units. A unit is a row with a UNIT NUMBER (like "101", "A-201", "1A", "Unit 5").
 
@@ -48,6 +59,13 @@ Return ONLY valid JSON in this exact format:
 {
   "propertyName": "Property Name Here or null",
   "statedTotalUnits": <number from document or null if not found>,
+  "statedSummary": {
+    "totalMonthlyRent": <stated total rent from document or null>,
+    "totalSqft": <stated total sqft from document or null>,
+    "occupancyRate": <stated occupancy percentage from document or null>,
+    "occupiedUnits": <stated occupied count from document or null>,
+    "vacantUnits": <stated vacant count from document or null>
+  },
   "units": [
     {
       "unitNumber": "101",
@@ -107,6 +125,7 @@ function bufferToBase64(buffer: Buffer): string {
 export async function parsePDF(buffer: Buffer): Promise<{
   units: MVPUnit[];
   statedUnitCount: number | null;
+  statedSummaryStats: StatedSummaryStats | null;
   propertyName: string | null;
   format: string;
   pageCount: number | null;
@@ -203,9 +222,27 @@ export async function parsePDF(buffer: Buffer): Promise<{
       format = 'yardi';
     }
 
+    // Extract stated summary stats
+    const statedSummaryStats: StatedSummaryStats | null = validated.statedSummary ? {
+      totalUnits: validated.statedTotalUnits ?? null,
+      totalMonthlyRent: validated.statedSummary.totalMonthlyRent ?? null,
+      totalSqft: validated.statedSummary.totalSqft ?? null,
+      occupancyRate: validated.statedSummary.occupancyRate ?? null,
+      occupiedUnits: validated.statedSummary.occupiedUnits ?? null,
+      vacantUnits: validated.statedSummary.vacantUnits ?? null,
+    } : (validated.statedTotalUnits ? {
+      totalUnits: validated.statedTotalUnits,
+      totalMonthlyRent: null,
+      totalSqft: null,
+      occupancyRate: null,
+      occupiedUnits: null,
+      vacantUnits: null,
+    } : null);
+
     return {
       units,
       statedUnitCount: validated.statedTotalUnits ?? null,
+      statedSummaryStats,
       propertyName: validated.propertyName ?? null,
       format,
       pageCount: null,
@@ -276,9 +313,27 @@ export async function parsePDF(buffer: Buffer): Promise<{
         sourceRow: index + 1,
       }));
 
+      // Extract stated summary stats
+      const statedSummaryStats: StatedSummaryStats | null = validated.statedSummary ? {
+        totalUnits: validated.statedTotalUnits ?? null,
+        totalMonthlyRent: validated.statedSummary.totalMonthlyRent ?? null,
+        totalSqft: validated.statedSummary.totalSqft ?? null,
+        occupancyRate: validated.statedSummary.occupancyRate ?? null,
+        occupiedUnits: validated.statedSummary.occupiedUnits ?? null,
+        vacantUnits: validated.statedSummary.vacantUnits ?? null,
+      } : (validated.statedTotalUnits ? {
+        totalUnits: validated.statedTotalUnits,
+        totalMonthlyRent: null,
+        totalSqft: null,
+        occupancyRate: null,
+        occupiedUnits: null,
+        vacantUnits: null,
+      } : null);
+
       return {
         units,
         statedUnitCount: validated.statedTotalUnits ?? null,
+        statedSummaryStats,
         propertyName: validated.propertyName ?? null,
         format: 'unknown',
         pageCount: null,

@@ -34,7 +34,7 @@ import {
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
-import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats } from '@/lib/types';
+import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats } from '@/lib/types';
 
 // Register AG Grid modules
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -132,7 +132,84 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
   );
 }
 
-function SummaryStatsCard({ stats }: { stats: SummaryStats | null }) {
+function ComparisonValue({
+  label,
+  stated,
+  calculated,
+  format = 'number',
+  tolerancePercent = 1
+}: {
+  label: string;
+  stated: number | null;
+  calculated: number | null;
+  format?: 'number' | 'currency' | 'percent';
+  tolerancePercent?: number;
+}) {
+  const formatValue = (value: number | null) => {
+    if (value === null) return '—';
+    if (format === 'currency') {
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+      }).format(value);
+    }
+    if (format === 'percent') {
+      return `${value.toFixed(1)}%`;
+    }
+    return new Intl.NumberFormat('en-US').format(value);
+  };
+
+  const hasStated = stated !== null;
+  const hasCalculated = calculated !== null;
+
+  // Check if values match within tolerance
+  let isMatch = true;
+  if (hasStated && hasCalculated) {
+    const diff = Math.abs(stated - calculated);
+    const tolerance = stated * (tolerancePercent / 100);
+    isMatch = diff <= tolerance || diff < 1; // Also ignore differences under 1
+  }
+
+  return (
+    <div>
+      <Text size="sm" c="dimmed">{label}</Text>
+      {hasStated ? (
+        <Group gap="xs" align="baseline">
+          <div>
+            <Text size="xs" c="dimmed" mb={2}>Stated</Text>
+            <Text size="lg" fw={600}>{formatValue(stated)}</Text>
+          </div>
+          <Text size="lg" c="dimmed">/</Text>
+          <div>
+            <Text size="xs" c="dimmed" mb={2}>Calculated</Text>
+            <Text size="lg" fw={600} c={isMatch ? undefined : 'orange'}>
+              {formatValue(calculated)}
+              {!isMatch && hasCalculated && (
+                <IconAlertTriangle
+                  size={14}
+                  style={{ marginLeft: 4, verticalAlign: 'middle' }}
+                  color="var(--mantine-color-orange-6)"
+                />
+              )}
+            </Text>
+          </div>
+        </Group>
+      ) : (
+        <Text size="lg" fw={600}>{formatValue(calculated)}</Text>
+      )}
+    </div>
+  );
+}
+
+function SummaryStatsCard({
+  stats,
+  statedStats
+}: {
+  stats: SummaryStats | null;
+  statedStats?: StatedSummaryStats | null;
+}) {
   if (!stats) {
     return null;
   }
@@ -157,9 +234,65 @@ function SummaryStatsCard({ stats }: { stats: SummaryStats | null }) {
     return `${value.toFixed(1)}%`;
   };
 
+  const hasStatedStats = statedStats && (
+    statedStats.totalMonthlyRent !== null ||
+    statedStats.totalSqft !== null ||
+    statedStats.occupancyRate !== null ||
+    statedStats.occupiedUnits !== null ||
+    statedStats.vacantUnits !== null
+  );
+
   return (
     <Card withBorder p="md">
-      <Title order={5} mb="md">Summary Statistics</Title>
+      <Group justify="space-between" mb="md">
+        <Title order={5}>Summary Statistics</Title>
+        {hasStatedStats && (
+          <Badge color="blue" variant="light">
+            Stated values available
+          </Badge>
+        )}
+      </Group>
+
+      {/* Comparison metrics (stated vs calculated when available) */}
+      {hasStatedStats && (
+        <>
+          <Text size="sm" c="dimmed" mb="sm" fw={500}>Stated vs Calculated Comparison</Text>
+          <SimpleGrid cols={{ base: 2, sm: 3, md: 5 }} spacing="md" mb="lg">
+            <ComparisonValue
+              label="Total Monthly Rent"
+              stated={statedStats?.totalMonthlyRent ?? null}
+              calculated={stats.totalMonthlyRent}
+              format="currency"
+            />
+            <ComparisonValue
+              label="Total Sqft"
+              stated={statedStats?.totalSqft ?? null}
+              calculated={stats.totalSqft}
+            />
+            <ComparisonValue
+              label="Occupancy Rate"
+              stated={statedStats?.occupancyRate ?? null}
+              calculated={stats.physicalOccupancy}
+              format="percent"
+            />
+            <ComparisonValue
+              label="Occupied Units"
+              stated={statedStats?.occupiedUnits ?? null}
+              calculated={stats.occupiedUnits}
+              tolerancePercent={0}
+            />
+            <ComparisonValue
+              label="Vacant Units"
+              stated={statedStats?.vacantUnits ?? null}
+              calculated={stats.vacantUnits}
+              tolerancePercent={0}
+            />
+          </SimpleGrid>
+        </>
+      )}
+
+      {/* Regular calculated stats */}
+      <Text size="sm" c="dimmed" mb="sm" fw={500}>{hasStatedStats ? 'Full Breakdown (Calculated)' : 'Calculated Values'}</Text>
       <SimpleGrid cols={{ base: 2, sm: 3, md: 4, lg: 6 }} spacing="md">
         <div>
           <Text size="sm" c="dimmed">Occupied</Text>
@@ -602,7 +735,7 @@ export default function ExtractionPage() {
         <UnitCountCard extraction={{ ...extraction, extractedUnitCount: units.length }} />
 
         {/* Summary Statistics */}
-        <SummaryStatsCard stats={extraction.summaryStats} />
+        <SummaryStatsCard stats={extraction.summaryStats} statedStats={extraction.statedSummaryStats} />
 
         {/* Validation Issues */}
         <Paper withBorder p="md">
