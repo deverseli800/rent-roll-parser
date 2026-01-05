@@ -145,7 +145,7 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
               </Text>
             </Table.Td>
             <Table.Td>
-              <Group gap="xs">
+              <Group gap="xs" wrap="nowrap">
                 <Tooltip label="View details">
                   <ActionIcon
                     variant="light"

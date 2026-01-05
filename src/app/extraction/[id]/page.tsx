@@ -433,31 +433,32 @@ export default function ExtractionPage() {
     {
       field: 'tenantName',
       headerName: 'Tenant',
-      width: 180,
+      minWidth: 180,
+      flex: 1,
       editable: true,
     },
     {
       field: 'leaseStartDate',
       headerName: 'Lease Start',
-      width: 110,
+      width: 120,
       editable: true,
     },
     {
       field: 'leaseEndDate',
       headerName: 'Lease End',
-      width: 110,
+      width: 120,
       editable: true,
     },
     {
       field: 'moveInDate',
       headerName: 'Move In',
-      width: 110,
+      width: 120,
       editable: true,
     },
     {
       field: 'moveOutDate',
       headerName: 'Move Out',
-      width: 110,
+      width: 120,
       editable: true,
     },
     {
@@ -468,7 +469,7 @@ export default function ExtractionPage() {
     },
     {
       headerName: '',
-      width: 50,
+      width: 70,
       pinned: 'right',
       cellRenderer: (params: { node: { rowIndex: number | null } }) => {
         const rowIndex = params.node.rowIndex;
@@ -548,7 +549,7 @@ export default function ExtractionPage() {
   }
 
   return (
-    <Container size="xl" py="xl">
+    <Container fluid px="xl" py="xl">
       <Stack gap="lg">
         {/* Header */}
         <Group justify="space-between">

@@ -64,7 +64,7 @@ export default function Home() {
   };
 
   return (
-    <Container size="xl" py="xl">
+    <Container fluid px="xl" py="xl">
       <Stack gap="xl">
         <Group justify="space-between" align="center">
           <div>
