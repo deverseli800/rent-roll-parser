@@ -673,7 +673,7 @@ export default function ExtractionPage() {
       {
         field: 'monthlyRent',
         headerName: 'Rent',
-        width: 100,
+        width: 120,
         editable: true,
         type: 'numericColumn',
         valueFormatter: (params) => {
@@ -692,8 +692,7 @@ export default function ExtractionPage() {
       {
         field: 'tenantName',
         headerName: 'Tenant',
-        minWidth: 180,
-        flex: 1,
+        width: 180,
         editable: true,
       },
       {
