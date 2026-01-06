@@ -38,11 +38,12 @@ import {
   IconShieldCheck,
   IconChevronDown,
   IconChevronRight,
+  IconBulb,
 } from '@tabler/icons-react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
-import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary } from '@/lib/types';
+import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
 
 // Register AG Grid modules
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -154,6 +155,98 @@ function VerificationChecksCard({ summary }: { summary: VerificationSummary | nu
               </Group>
             </Paper>
           ))}
+        </Stack>
+      </Collapse>
+    </Card>
+  );
+}
+
+function ExplanationsCard({ summary }: { summary: ExplanationSummary | null }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!summary || !summary.hasExplanations || summary.explanations.length === 0) {
+    return null;
+  }
+
+  const rootCauseLabels: Record<string, { label: string; color: string }> = {
+    category_mismatch: { label: 'Category Definition', color: 'blue' },
+    extraction_error: { label: 'Extraction Error', color: 'red' },
+    data_quality: { label: 'Data Quality', color: 'orange' },
+    unknown: { label: 'Unknown', color: 'gray' },
+  };
+
+  return (
+    <Card withBorder p="md">
+      <UnstyledButton
+        onClick={() => setExpanded(!expanded)}
+        style={{ width: '100%' }}
+      >
+        <Group justify="space-between">
+          <Group gap="sm">
+            {expanded ? <IconChevronDown size={20} /> : <IconChevronRight size={20} />}
+            <IconBulb size={24} color="var(--mantine-color-yellow-6)" />
+            <Title order={5}>Mismatch Explanations</Title>
+          </Group>
+          <Badge size="lg" color="blue" variant="light">
+            {summary.explanations.length} explanation{summary.explanations.length !== 1 ? 's' : ''}
+          </Badge>
+        </Group>
+      </UnstyledButton>
+
+      <Collapse in={expanded}>
+        <Stack gap="md" mt="md">
+          {/* Overall Assessment */}
+          <Alert color="blue" variant="light" icon={<IconBulb size={18} />}>
+            {summary.overallAssessment}
+          </Alert>
+
+          {/* Individual Explanations */}
+          {summary.explanations.map((explanation, index) => {
+            const causeInfo = rootCauseLabels[explanation.rootCause] || rootCauseLabels.unknown;
+
+            return (
+              <Paper
+                key={index}
+                withBorder
+                p="md"
+                style={{
+                  borderLeftWidth: 3,
+                  borderLeftColor: `var(--mantine-color-${causeInfo.color}-6)`,
+                }}
+              >
+                <Group justify="space-between" mb="xs">
+                  <Text fw={600}>{explanation.checkName}</Text>
+                  <Badge color={causeInfo.color} variant="light" size="sm">
+                    {causeInfo.label}
+                  </Badge>
+                </Group>
+
+                <Text size="sm" mb="sm">{explanation.explanation}</Text>
+
+                {explanation.affectedUnits && explanation.affectedUnits.length > 0 && (
+                  <Group gap="xs" mb="xs">
+                    <Text size="xs" c="dimmed">Affected units:</Text>
+                    {explanation.affectedUnits.slice(0, 10).map((unit) => (
+                      <Badge key={unit} size="xs" variant="outline" color="gray">
+                        {unit}
+                      </Badge>
+                    ))}
+                    {explanation.affectedUnits.length > 10 && (
+                      <Text size="xs" c="dimmed">
+                        +{explanation.affectedUnits.length - 10} more
+                      </Text>
+                    )}
+                  </Group>
+                )}
+
+                {explanation.recommendation && (
+                  <Text size="sm" c="dimmed" fs="italic">
+                    💡 {explanation.recommendation}
+                  </Text>
+                )}
+              </Paper>
+            );
+          })}
         </Stack>
       </Collapse>
     </Card>
@@ -876,6 +969,9 @@ export default function ExtractionPage() {
 
         {/* Verification Checks */}
         <VerificationChecksCard summary={extraction.verificationSummary} />
+
+        {/* Mismatch Explanations */}
+        <ExplanationsCard summary={extraction.explanationSummary} />
 
         {/* Summary Statistics */}
         <SummaryStatsCard stats={extraction.summaryStats} statedStats={extraction.statedSummaryStats} />

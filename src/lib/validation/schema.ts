@@ -82,6 +82,23 @@ export const VerificationSummarySchema = z.object({
   checks: z.array(VerificationCheckSchema),
 });
 
+// Mismatch explanation (AI-generated)
+export const MismatchExplanationSchema = z.object({
+  checkId: z.string(),
+  checkName: z.string(),
+  explanation: z.string(),
+  rootCause: z.enum(['category_mismatch', 'extraction_error', 'data_quality', 'unknown']),
+  affectedUnits: z.array(z.string()).optional(),
+  recommendation: z.string().optional(),
+});
+
+// Explanation summary
+export const ExplanationSummarySchema = z.object({
+  hasExplanations: z.boolean(),
+  explanations: z.array(MismatchExplanationSchema),
+  overallAssessment: z.string(),
+});
+
 export const RentRollExtractionSchema = z.object({
   id: z.string().uuid(),
   fileName: z.string(),
@@ -101,6 +118,7 @@ export const RentRollExtractionSchema = z.object({
 
   validationIssues: z.array(ValidationIssueSchema),
   verificationSummary: VerificationSummarySchema.nullable(),
+  explanationSummary: ExplanationSummarySchema.nullable(),
 
   sourceType: z.enum(['excel', 'pdf']),
   sourceFormat: z.string().nullable(),

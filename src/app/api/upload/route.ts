@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { parseRentRoll } from '@/lib/parsers';
 import { validateExtraction } from '@/lib/validation/validators';
 import { runVerificationChecks } from '@/lib/validation/verification';
+import { explainMismatches } from '@/lib/validation/explainer';
 import { saveExtraction } from '@/lib/storage';
 import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import type { RentRollExtraction } from '@/lib/types';
@@ -54,6 +55,7 @@ export async function POST(request: NextRequest) {
       statedSummaryStats: null,
       validationIssues: [],
       verificationSummary: null,
+      explanationSummary: null,
       sourceType: fileName.endsWith('.pdf') ? 'pdf' : 'excel',
       sourceFormat: null,
       processingTimeMs: null,
@@ -91,6 +93,15 @@ export async function POST(request: NextRequest) {
         calculatedStats
       );
 
+      // Generate explanations for failed checks
+      const failedChecks = verificationSummary.checks.filter(c => c.status === 'failed');
+      const explanationSummary = await explainMismatches(
+        result.units,
+        result.statedSummaryStats,
+        calculatedStats,
+        failedChecks
+      );
+
       // Update extraction with results
       extraction.units = result.units;
       extraction.statedUnitCount = result.statedUnitCount;
@@ -104,6 +115,7 @@ export async function POST(request: NextRequest) {
       extraction.pageCount = result.pageCount;
       extraction.validationIssues = issues;
       extraction.verificationSummary = verificationSummary;
+      extraction.explanationSummary = explanationSummary;
       extraction.summaryStats = calculatedStats;
       extraction.processedAt = new Date().toISOString();
       extraction.processingTimeMs = Date.now() - startTime;
