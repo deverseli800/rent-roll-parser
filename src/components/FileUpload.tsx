@@ -39,14 +39,16 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       setProgress(currentProgress);
 
       // Update status message based on progress
-      if (currentProgress > 10 && currentProgress <= 30) {
+      if (currentProgress > 10 && currentProgress <= 25) {
         setStatusMessage('Processing document...');
-      } else if (currentProgress > 30 && currentProgress <= 50) {
+      } else if (currentProgress > 25 && currentProgress <= 45) {
         setStatusMessage('Extracting unit data with AI...');
-      } else if (currentProgress > 50 && currentProgress <= 70) {
+      } else if (currentProgress > 45 && currentProgress <= 60) {
         setStatusMessage('Analyzing rent roll structure...');
-      } else if (currentProgress > 70) {
+      } else if (currentProgress > 60 && currentProgress <= 75) {
         setStatusMessage('Validating extracted data...');
+      } else if (currentProgress > 75) {
+        setStatusMessage('Analyzing mismatches...');
       }
     }, 200);
   };
