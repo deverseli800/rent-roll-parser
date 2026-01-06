@@ -1,5 +1,8 @@
 # Rent Roll Parser
 
+## Implementation Plan
+The original implementation plan is at: `(local plan file, not committed)`
+
 ## Project Overview
 A Next.js web application that extracts structured data from multifamily real estate rent rolls (Excel and PDF) using Claude AI. The app parses documents, validates extraction accuracy, and provides an interactive review UI.
 
