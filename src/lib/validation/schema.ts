@@ -75,6 +75,7 @@ export const VerificationCheckSchema = z.object({
 // Verification summary
 export const VerificationSummarySchema = z.object({
   confidence: z.enum(['high', 'medium', 'low']),
+  confidenceReason: z.string(),
   passed: z.number(),
   failed: z.number(),
   skipped: z.number(),

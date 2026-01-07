@@ -70,6 +70,7 @@ export interface VerificationCheck {
 // Overall verification summary
 export interface VerificationSummary {
   confidence: 'high' | 'medium' | 'low';
+  confidenceReason: string;
   passed: number;
   failed: number;
   skipped: number;
