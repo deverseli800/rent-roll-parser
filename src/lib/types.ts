@@ -157,4 +157,9 @@ export interface ExtractionSummary {
   // AI usage tracking
   modelUsed: string | null;
   totalTokens: number | null;
+  // Verification summary
+  verificationPassed: number | null;
+  verificationFailed: number | null;
+  verificationSkipped: number | null;
+  verificationConfidence: 'high' | 'medium' | 'low' | null;
 }
