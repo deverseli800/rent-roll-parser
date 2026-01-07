@@ -4,7 +4,6 @@ import { parseRentRoll } from '@/lib/parsers';
 import { validateExtraction } from '@/lib/validation/validators';
 import { runVerificationChecks } from '@/lib/validation/verification';
 import { explainMismatches } from '@/lib/validation/explainer';
-import { saveExtraction } from '@/lib/storage';
 import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import type { RentRollExtraction } from '@/lib/types';
 
@@ -67,9 +66,6 @@ export async function POST(request: NextRequest) {
       error: null,
     };
 
-    // Save initial record
-    await saveExtraction(extraction);
-
     try {
       // Parse the file
       const result = await parseRentRoll(buffer, file.name);
@@ -126,17 +122,8 @@ export async function POST(request: NextRequest) {
       extraction.outputTokens = result.outputTokens;
       extraction.totalTokens = result.inputTokens + result.outputTokens;
 
-      await saveExtraction(extraction);
-
-      return NextResponse.json({
-        id: extraction.id,
-        status: extraction.status,
-        extractedUnitCount: extraction.extractedUnitCount,
-        statedUnitCount: extraction.statedUnitCount,
-        countMatch: extraction.countMatch,
-        criticalIssues: issues.filter(i => i.severity === 'critical').length,
-        processingTimeMs: extraction.processingTimeMs,
-      });
+      // Return full extraction for client-side storage
+      return NextResponse.json(extraction);
     } catch (parseError) {
       // Update extraction with error
       extraction.status = 'error';
@@ -146,13 +133,8 @@ export async function POST(request: NextRequest) {
       extraction.processedAt = new Date().toISOString();
       extraction.processingTimeMs = Date.now() - startTime;
 
-      await saveExtraction(extraction);
-
-      return NextResponse.json({
-        id: extraction.id,
-        status: 'error',
-        error: extraction.error,
-      }, { status: 500 });
+      // Return full extraction with error for client-side storage
+      return NextResponse.json(extraction, { status: 500 });
     }
   } catch (error) {
     console.error('Upload error:', error);
