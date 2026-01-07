@@ -44,6 +44,8 @@ import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
+import { getExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
+import * as XLSX from 'xlsx';
 
 // Register AG Grid modules
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -581,11 +583,10 @@ export default function ExtractionPage() {
     leaseStatus: null,
   });
 
-  const fetchExtraction = useCallback(async () => {
+  const fetchExtraction = useCallback(() => {
     try {
-      const response = await fetch(`/api/extraction/${id}`);
-      if (response.ok) {
-        const data = await response.json();
+      const data = getExtraction(id);
+      if (data) {
         setExtraction(data);
         setUnits(data.units);
       } else {
@@ -607,17 +608,12 @@ export default function ExtractionPage() {
     fetchExtraction();
   }, [fetchExtraction]);
 
-  const handleSave = async () => {
+  const handleSave = () => {
     setSaving(true);
     try {
-      const response = await fetch(`/api/extraction/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ units }),
-      });
+      const updated = updateStoredExtraction(id, { units, extractedUnitCount: units.length });
 
-      if (response.ok) {
-        const updated = await response.json();
+      if (updated) {
         setExtraction(updated);
         notifications.show({
           title: 'Saved',
@@ -636,17 +632,12 @@ export default function ExtractionPage() {
     }
   };
 
-  const handleApprove = async () => {
+  const handleApprove = () => {
     setSaving(true);
     try {
-      const response = await fetch(`/api/extraction/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ units, status: 'approved' }),
-      });
+      const updated = updateStoredExtraction(id, { units, extractedUnitCount: units.length, status: 'approved' });
 
-      if (response.ok) {
-        const updated = await response.json();
+      if (updated) {
         setExtraction(updated);
         notifications.show({
           title: 'Approved',
@@ -687,8 +678,32 @@ export default function ExtractionPage() {
 
   const handleExportExcel = () => {
     if (!extraction) return;
-    // Trigger download via the API route
-    window.location.href = `/api/extraction/${id}/export`;
+
+    // Prepare data for Excel export
+    const exportData = units.map(unit => ({
+      'Unit #': unit.unitNumber,
+      'Status': unit.status,
+      'Type': unit.unitType || '',
+      'Sqft': unit.unitSqft || '',
+      'Monthly Rent': unit.monthlyRent || '',
+      'Tenant': unit.tenantName || '',
+      'Lease Start': unit.leaseStartDate || '',
+      'Lease End': unit.leaseEndDate || '',
+      'Move In': unit.moveInDate || '',
+      'Move Out': unit.moveOutDate || '',
+      'Lease Status': unit.leaseStatus || '',
+    }));
+
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(exportData);
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, 'Units');
+
+    // Generate filename and download
+    const fileName = `${extraction.fileName.replace(/\.[^/.]+$/, '')}_extracted.xlsx`;
+    XLSX.writeFile(wb, fileName);
   };
 
   const handleUnitChange = useCallback((index: number, field: keyof MVPUnit, value: unknown) => {

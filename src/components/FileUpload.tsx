@@ -5,6 +5,8 @@ import { Dropzone, MIME_TYPES } from '@mantine/dropzone';
 import { Group, Text, rem, Stack, Progress } from '@mantine/core';
 import { IconUpload, IconX, IconFile } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
+import { saveExtraction } from '@/lib/clientStorage';
+import type { RentRollExtraction } from '@/lib/types';
 
 interface FileUploadProps {
   onUploadComplete: (id: string) => void;
@@ -80,24 +82,29 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       setProgress(95);
       setStatusMessage('Finalizing...');
 
-      const result = await response.json();
+      const extraction: RentRollExtraction = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || 'Upload failed');
+        throw new Error(extraction.error || 'Upload failed');
       }
+
+      // Save to client-side storage
+      saveExtraction(extraction);
 
       setProgress(100);
       setStatusMessage('Complete!');
 
+      const criticalIssues = extraction.validationIssues.filter(i => i.severity === 'critical').length;
+
       notifications.show({
         title: 'Upload Complete',
-        message: `Extracted ${result.extractedUnitCount} units${
-          result.statedUnitCount ? ` (stated: ${result.statedUnitCount})` : ''
+        message: `Extracted ${extraction.extractedUnitCount} units${
+          extraction.statedUnitCount ? ` (stated: ${extraction.statedUnitCount})` : ''
         }`,
-        color: result.criticalIssues > 0 ? 'orange' : 'green',
+        color: criticalIssues > 0 ? 'orange' : 'green',
       });
 
-      onUploadComplete(result.id);
+      onUploadComplete(extraction.id);
     } catch (error) {
       stopProgressSimulation();
       notifications.show({

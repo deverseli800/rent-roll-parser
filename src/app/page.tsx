@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { IconUpload, IconHistory, IconRefresh } from '@tabler/icons-react';
 import { FileUpload } from '@/components/FileUpload';
 import { ExtractionList } from '@/components/ExtractionList';
+import { getExtractionSummaries, deleteExtraction as deleteFromStorage } from '@/lib/clientStorage';
 import type { ExtractionSummary } from '@/lib/types';
 
 export default function Home() {
@@ -14,13 +15,10 @@ export default function Home() {
   const [extractions, setExtractions] = useState<ExtractionSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchExtractions = useCallback(async () => {
+  const fetchExtractions = useCallback(() => {
     try {
-      const response = await fetch('/api/extractions');
-      if (response.ok) {
-        const data = await response.json();
-        setExtractions(data);
-      }
+      const summaries = getExtractionSummaries();
+      setExtractions(summaries);
     } catch (error) {
       console.error('Error fetching extractions:', error);
     } finally {
@@ -41,13 +39,11 @@ export default function Home() {
     router.push(`/extraction/${id}`);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = (id: string) => {
     try {
-      const response = await fetch(`/api/extraction/${id}`, {
-        method: 'DELETE',
-      });
+      const deleted = deleteFromStorage(id);
 
-      if (response.ok) {
+      if (deleted) {
         notifications.show({
           title: 'Deleted',
           message: 'Extraction deleted successfully',
