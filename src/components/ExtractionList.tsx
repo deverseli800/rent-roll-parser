@@ -1,7 +1,7 @@
 'use client';
 
 import { Table, Badge, Group, Text, ActionIcon, Tooltip, Stack, ThemeIcon, Box } from '@mantine/core';
-import { IconEye, IconTrash, IconFileSpreadsheet } from '@tabler/icons-react';
+import { IconEye, IconTrash, IconFileSpreadsheet, IconCircleCheck, IconX } from '@tabler/icons-react';
 import type { ExtractionSummary } from '@/lib/types';
 
 interface ExtractionListProps {
@@ -69,6 +69,41 @@ function getCountBadge(extraction: ExtractionSummary) {
   );
 }
 
+function getVerificationBadge(extraction: ExtractionSummary) {
+  const { verificationPassed, verificationFailed, verificationSkipped, verificationConfidence } = extraction;
+
+  if (verificationPassed === null) {
+    return <Text size="sm" c="dimmed">—</Text>;
+  }
+
+  const total = (verificationPassed ?? 0) + (verificationFailed ?? 0);
+  const hasFailures = (verificationFailed ?? 0) > 0;
+
+  const confidenceColors: Record<string, string> = {
+    high: 'green',
+    medium: 'yellow',
+    low: 'red',
+  };
+
+  const color = verificationConfidence ? confidenceColors[verificationConfidence] : 'gray';
+
+  const tooltipText = verificationSkipped && verificationSkipped > 0
+    ? `${verificationPassed}/${total} passed (${verificationSkipped} skipped)`
+    : `${verificationPassed}/${total} passed`;
+
+  return (
+    <Tooltip label={tooltipText}>
+      <Badge
+        color={color}
+        variant="light"
+        leftSection={hasFailures ? <IconX size={12} /> : <IconCircleCheck size={12} />}
+      >
+        {verificationPassed}/{total}
+      </Badge>
+    </Tooltip>
+  );
+}
+
 export function ExtractionList({ extractions, onView, onDelete }: ExtractionListProps) {
   if (extractions.length === 0) {
     return (
@@ -96,6 +131,7 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
             <Table.Th>File Name</Table.Th>
             <Table.Th>Property</Table.Th>
             <Table.Th>Units</Table.Th>
+            <Table.Th>Checks</Table.Th>
             <Table.Th>Issues</Table.Th>
             <Table.Th>Status</Table.Th>
             <Table.Th>Model</Table.Th>
@@ -119,6 +155,7 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
               </Text>
             </Table.Td>
             <Table.Td>{getCountBadge(extraction)}</Table.Td>
+            <Table.Td>{getVerificationBadge(extraction)}</Table.Td>
             <Table.Td>
               {extraction.criticalIssues > 0 ? (
                 <Badge color="red">{extraction.criticalIssues} critical</Badge>
