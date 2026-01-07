@@ -27,32 +27,39 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
     };
   }, []);
 
-  const startProgressSimulation = () => {
+  const startProgressSimulation = (isPdf: boolean) => {
     // Simulate progress that slows down as it approaches 90%
+    // PDFs take much longer since we send the whole document to Claude
     let currentProgress = 5;
     setProgress(currentProgress);
     setStatusMessage('Uploading file...');
 
+    // PDF: slower interval (500ms) and smaller increment multiplier (0.015)
+    // Excel: faster interval (200ms) and larger increment multiplier (0.03)
+    const intervalMs = isPdf ? 500 : 200;
+    const incrementMultiplier = isPdf ? 0.015 : 0.03;
+    const minIncrement = isPdf ? 0.2 : 0.5;
+
     progressIntervalRef.current = setInterval(() => {
       // Slow down as we get closer to 90%
       const remaining = 90 - currentProgress;
-      const increment = Math.max(0.5, remaining * 0.03);
+      const increment = Math.max(minIncrement, remaining * incrementMultiplier);
       currentProgress = Math.min(89, currentProgress + increment);
       setProgress(currentProgress);
 
       // Update status message based on progress
       if (currentProgress > 10 && currentProgress <= 25) {
-        setStatusMessage('Processing document...');
+        setStatusMessage(isPdf ? 'Sending document to AI...' : 'Processing document...');
       } else if (currentProgress > 25 && currentProgress <= 45) {
-        setStatusMessage('Extracting unit data with AI...');
+        setStatusMessage(isPdf ? 'AI analyzing pages...' : 'Extracting unit data with AI...');
       } else if (currentProgress > 45 && currentProgress <= 60) {
-        setStatusMessage('Analyzing rent roll structure...');
+        setStatusMessage(isPdf ? 'Extracting unit data from PDF...' : 'Analyzing rent roll structure...');
       } else if (currentProgress > 60 && currentProgress <= 75) {
         setStatusMessage('Validating extracted data...');
       } else if (currentProgress > 75) {
         setStatusMessage('Analyzing mismatches...');
       }
-    }, 200);
+    }, intervalMs);
   };
 
   const stopProgressSimulation = () => {
@@ -66,8 +73,9 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
     if (files.length === 0) return;
 
     const file = files[0];
+    const isPdf = file.name.toLowerCase().endsWith('.pdf');
     setUploading(true);
-    startProgressSimulation();
+    startProgressSimulation(isPdf);
 
     try {
       const formData = new FormData();
