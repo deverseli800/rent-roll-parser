@@ -265,29 +265,69 @@ function ExplanationsCard({ summary }: { summary: ExplanationSummary | null }) {
   );
 }
 
-function ValidationIssuesList({ issues }: { issues: ValidationIssue[] }) {
-  if (issues.length === 0) {
-    return (
-      <Alert icon={<IconCircleCheck size={16} />} color="green" variant="light">
-        No validation issues found
-      </Alert>
-    );
-  }
+function ValidationIssuesCard({ issues }: { issues: ValidationIssue[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const criticalCount = issues.filter(i => i.severity === 'critical').length;
+  const warningCount = issues.filter(i => i.severity === 'warning').length;
+
+  const getBadgeColor = () => {
+    if (criticalCount > 0) return 'red';
+    if (warningCount > 0) return 'yellow';
+    return 'green';
+  };
+
+  const getBadgeText = () => {
+    if (issues.length === 0) return 'No Issues';
+    if (criticalCount > 0) return `${criticalCount} Critical`;
+    if (warningCount > 0) return `${warningCount} Warning${warningCount > 1 ? 's' : ''}`;
+    return `${issues.length} Info`;
+  };
 
   return (
-    <Stack gap="xs">
-      {issues.map((issue, index) => (
-        <Alert
-          key={index}
-          icon={<IconAlertTriangle size={16} />}
-          color={issue.severity === 'critical' ? 'red' : issue.severity === 'warning' ? 'yellow' : 'blue'}
-          variant="light"
-          title={issue.type.replace('_', ' ').toUpperCase()}
-        >
-          {issue.message}
-        </Alert>
-      ))}
-    </Stack>
+    <Card withBorder p="md">
+      <UnstyledButton
+        onClick={() => setExpanded(!expanded)}
+        style={{ width: '100%' }}
+      >
+        <Group justify="space-between">
+          <Group gap="sm">
+            {expanded ? <IconChevronDown size={20} /> : <IconChevronRight size={20} />}
+            <IconAlertTriangle size={24} color={issues.length > 0 ? 'var(--mantine-color-orange-6)' : 'var(--mantine-color-gray-5)'} />
+            <Title order={5}>Validation Issues</Title>
+          </Group>
+          <Badge
+            size="lg"
+            color={getBadgeColor()}
+            variant="light"
+          >
+            {getBadgeText()}
+          </Badge>
+        </Group>
+      </UnstyledButton>
+
+      <Collapse in={expanded}>
+        <Stack gap="xs" mt="md">
+          {issues.length === 0 ? (
+            <Alert icon={<IconCircleCheck size={16} />} color="green" variant="light">
+              No validation issues found
+            </Alert>
+          ) : (
+            issues.map((issue, index) => (
+              <Alert
+                key={index}
+                icon={<IconAlertTriangle size={16} />}
+                color={issue.severity === 'critical' ? 'red' : issue.severity === 'warning' ? 'yellow' : 'blue'}
+                variant="light"
+                title={issue.type.replace('_', ' ').toUpperCase()}
+              >
+                {issue.message}
+              </Alert>
+            ))
+          )}
+        </Stack>
+      </Collapse>
+    </Card>
   );
 }
 
@@ -998,14 +1038,11 @@ export default function ExtractionPage() {
         {/* Mismatch Explanations */}
         <ExplanationsCard summary={extraction.explanationSummary} />
 
+        {/* Validation Issues */}
+        <ValidationIssuesCard issues={extraction.validationIssues} />
+
         {/* Summary Statistics */}
         <SummaryStatsCard stats={extraction.summaryStats} statedStats={extraction.statedSummaryStats} />
-
-        {/* Validation Issues */}
-        <Paper withBorder p="md">
-          <Title order={4} mb="md">Validation Issues</Title>
-          <ValidationIssuesList issues={extraction.validationIssues} />
-        </Paper>
 
         {/* Units Table */}
         <Paper withBorder p="md">
