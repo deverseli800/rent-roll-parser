@@ -45,18 +45,34 @@ export function runVerificationChecks(
   const skipped = checks.filter(c => c.status === 'skipped').length;
   const total = checks.length;
 
-  // Determine confidence level
+  // Determine confidence level and reason
   let confidence: 'high' | 'medium' | 'low';
+  let confidenceReason: string;
+
   if (failed === 0 && skipped <= 2) {
     confidence = 'high';
+    confidenceReason = 'All verifiable checks passed with sufficient stated values to compare against.';
   } else if (failed <= 1 && passed >= 3) {
     confidence = 'medium';
+    if (failed === 1) {
+      confidenceReason = `1 check failed but ${passed} checks passed. Review the failed check for potential issues.`;
+    } else {
+      confidenceReason = `${passed} checks passed but ${skipped} checks were skipped due to missing stated values.`;
+    }
   } else {
+    if (failed > 0) {
+      confidenceReason = `${failed} check(s) failed. Review the extraction for potential errors.`;
+    } else if (skipped > 2 && passed < 3) {
+      confidenceReason = `Only ${passed} of ${total} checks could be verified. Document lacks stated summary values (unit count, totals, etc.) for comparison.`;
+    } else {
+      confidenceReason = `Insufficient verification: ${passed} passed, ${failed} failed, ${skipped} skipped.`;
+    }
     confidence = 'low';
   }
 
   return {
     confidence,
+    confidenceReason,
     passed,
     failed,
     skipped,

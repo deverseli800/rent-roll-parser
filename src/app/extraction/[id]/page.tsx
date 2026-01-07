@@ -23,6 +23,7 @@ import {
   Collapse,
   UnstyledButton,
   Switch,
+  Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -114,13 +115,22 @@ function VerificationChecksCard({ summary }: { summary: VerificationSummary | nu
               {summary.passed}/{summary.total - summary.skipped} passed
               {summary.skipped > 0 && ` (${summary.skipped} skipped)`}
             </Text>
-            <Badge
-              size="lg"
-              color={confidenceColors[summary.confidence]}
-              variant="light"
+            <Tooltip
+              label={summary.confidenceReason}
+              multiline
+              w={300}
+              withArrow
+              position="bottom"
             >
-              {confidenceLabels[summary.confidence]}
-            </Badge>
+              <Badge
+                size="lg"
+                color={confidenceColors[summary.confidence]}
+                variant="light"
+                style={{ cursor: 'help' }}
+              >
+                {confidenceLabels[summary.confidence]}
+              </Badge>
+            </Tooltip>
           </Group>
         </Group>
       </UnstyledButton>
