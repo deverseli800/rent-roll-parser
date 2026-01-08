@@ -40,12 +40,14 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconBulb,
+  IconSparkles,
 } from '@tabler/icons-react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
 import { getExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
+import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
 import * as XLSX from 'xlsx';
 
 // Register AG Grid modules
@@ -619,6 +621,7 @@ export default function ExtractionPage() {
   const [units, setUnits] = useState<MVPUnit[]>([]);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [showAllColumns, setShowAllColumns] = useState(false);
+  const [showHighlighting, setShowHighlighting] = useState(true);
   const [newUnit, setNewUnit] = useState<Partial<MVPUnit>>({
     unitNumber: '',
     status: 'vacant',
@@ -780,6 +783,40 @@ export default function ExtractionPage() {
     return hasData;
   }, [units]);
 
+  // Calculate highlights for outliers and data quality issues
+  const highlights = useMemo(() => detectHighlights(units), [units]);
+  const highlightSummary = useMemo(() => getHighlightSummary(highlights), [highlights]);
+
+  // Helper to get cell style based on highlight
+  const getCellStyle = useCallback((rowIndex: number | null | undefined, field: keyof UnitHighlights) => {
+    if (!showHighlighting || rowIndex === null || rowIndex === undefined) return {};
+
+    const unitHighlights = highlights.get(rowIndex);
+    if (!unitHighlights) return {};
+
+    const highlight = unitHighlights[field];
+    if (!highlight) return {};
+
+    const colors = {
+      outlier: { backgroundColor: 'rgba(255, 193, 7, 0.25)', borderLeft: '3px solid #ffc107' },
+      warning: { backgroundColor: 'rgba(255, 152, 0, 0.25)', borderLeft: '3px solid #ff9800' },
+      critical: { backgroundColor: 'rgba(244, 67, 54, 0.25)', borderLeft: '3px solid #f44336' },
+    };
+
+    return colors[highlight.type] || {};
+  }, [showHighlighting, highlights]);
+
+  // Helper to get tooltip for highlighted cells
+  const getHighlightTooltip = useCallback((rowIndex: number | null | undefined, field: keyof UnitHighlights): string | undefined => {
+    if (!showHighlighting || rowIndex === null || rowIndex === undefined) return undefined;
+
+    const unitHighlights = highlights.get(rowIndex);
+    if (!unitHighlights) return undefined;
+
+    const highlight = unitHighlights[field];
+    return highlight?.message;
+  }, [showHighlighting, highlights]);
+
   // AG Grid column definitions
   const columnDefs = useMemo<ColDef<MVPUnit>[]>(() => {
     const allColumns: (ColDef<MVPUnit> & { field?: string })[] = [
@@ -827,6 +864,8 @@ export default function ExtractionPage() {
           const val = Number(params.newValue);
           return isNaN(val) ? null : val;
         },
+        cellStyle: (params) => getCellStyle(params.node?.rowIndex, 'unitSqft'),
+        tooltipValueGetter: (params) => getHighlightTooltip(params.node?.rowIndex, 'unitSqft'),
       },
       {
         field: 'monthlyRent',
@@ -846,12 +885,16 @@ export default function ExtractionPage() {
           const val = Number(String(params.newValue).replace(/[$,]/g, ''));
           return isNaN(val) ? null : val;
         },
+        cellStyle: (params) => getCellStyle(params.node?.rowIndex, 'monthlyRent'),
+        tooltipValueGetter: (params) => getHighlightTooltip(params.node?.rowIndex, 'monthlyRent'),
       },
       {
         field: 'tenantName',
         headerName: 'Tenant',
         width: 180,
         editable: true,
+        cellStyle: (params) => getCellStyle(params.node?.rowIndex, 'tenantName'),
+        tooltipValueGetter: (params) => getHighlightTooltip(params.node?.rowIndex, 'tenantName'),
       },
       {
         field: 'leaseStartDate',
@@ -919,12 +962,13 @@ export default function ExtractionPage() {
       if (!col.field) return true; // Keep columns without field (like delete)
       return columnsWithData[col.field];
     });
-  }, [handleDeleteUnit, showAllColumns, columnsWithData]);
+  }, [handleDeleteUnit, showAllColumns, columnsWithData, getCellStyle, getHighlightTooltip]);
 
   const defaultColDef = useMemo<ColDef>(() => ({
     sortable: true,
     filter: true,
     resizable: true,
+    tooltipShowDelay: 300,
   }), []);
 
   const onCellValueChanged = useCallback((event: CellValueChangedEvent<MVPUnit>) => {
@@ -1047,8 +1091,63 @@ export default function ExtractionPage() {
         {/* Units Table */}
         <Paper withBorder p="md">
           <Group justify="space-between" mb="md">
-            <Title order={4}>Units ({units.length})</Title>
             <Group gap="md">
+              <Title order={4}>Units ({units.length})</Title>
+              {showHighlighting && highlightSummary.total > 0 && (
+                <Group gap="xs">
+                  {highlightSummary.critical > 0 && (
+                    <Badge size="sm" color="red" variant="light">
+                      {highlightSummary.critical} critical
+                    </Badge>
+                  )}
+                  {highlightSummary.warnings > 0 && (
+                    <Badge size="sm" color="orange" variant="light">
+                      {highlightSummary.warnings} warnings
+                    </Badge>
+                  )}
+                  {highlightSummary.outliers > 0 && (
+                    <Badge size="sm" color="yellow" variant="light">
+                      {highlightSummary.outliers} outliers
+                    </Badge>
+                  )}
+                </Group>
+              )}
+            </Group>
+            <Group gap="md">
+              <Tooltip
+                label={
+                  <Stack gap={4}>
+                    <Text size="xs" fw={500}>Smart Highlighting detects:</Text>
+                    <Group gap="xs">
+                      <div style={{ width: 12, height: 12, backgroundColor: 'rgba(244, 67, 54, 0.4)', borderRadius: 2 }} />
+                      <Text size="xs">Critical issues (missing data)</Text>
+                    </Group>
+                    <Group gap="xs">
+                      <div style={{ width: 12, height: 12, backgroundColor: 'rgba(255, 152, 0, 0.4)', borderRadius: 2 }} />
+                      <Text size="xs">Warnings (suspicious values)</Text>
+                    </Group>
+                    <Group gap="xs">
+                      <div style={{ width: 12, height: 12, backgroundColor: 'rgba(255, 193, 7, 0.4)', borderRadius: 2 }} />
+                      <Text size="xs">Outliers (statistical anomalies)</Text>
+                    </Group>
+                  </Stack>
+                }
+                multiline
+                w={250}
+                withArrow
+              >
+                <Switch
+                  label={
+                    <Group gap={4}>
+                      <IconSparkles size={14} />
+                      <Text size="sm">Smart highlighting</Text>
+                    </Group>
+                  }
+                  checked={showHighlighting}
+                  onChange={(e) => setShowHighlighting(e.currentTarget.checked)}
+                  size="sm"
+                />
+              </Tooltip>
               <Switch
                 label="Show all columns"
                 checked={showAllColumns}
