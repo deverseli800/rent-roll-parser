@@ -133,12 +133,16 @@ export function detectHighlights(units: MVPUnit[]): Map<number, UnitHighlights> 
       };
     }
 
-    // Vacant unit with tenant name
+    // Vacant unit with tenant name (ignore placeholder names like "VACANT")
     if ((unit.status === 'vacant' || unit.status === 'model' || unit.status === 'down') && unit.tenantName && unit.tenantName.trim() !== '') {
-      unitHighlights.tenantName = {
-        type: 'warning',
-        message: 'Vacant unit has tenant name - verify status is correct',
-      };
+      const normalizedName = unit.tenantName.trim().toLowerCase();
+      const isPlaceholderName = normalizedName === 'vacant' || normalizedName === 'vacancy' || normalizedName === 'n/a' || normalizedName === 'none' || normalizedName === '-';
+      if (!isPlaceholderName) {
+        unitHighlights.tenantName = {
+          type: 'warning',
+          message: 'Vacant unit has tenant name - verify status is correct',
+        };
+      }
     }
 
     // Occupied unit without tenant name (warning, not critical)
