@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Container,
@@ -41,10 +41,11 @@ import {
   IconChevronRight,
   IconBulb,
   IconSparkles,
+  IconKeyboard,
 } from '@tabler/icons-react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import type { ColDef, CellValueChangedEvent } from 'ag-grid-community';
+import type { ColDef, CellValueChangedEvent, GridApi } from 'ag-grid-community';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
 import { getExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
 import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
@@ -610,6 +611,74 @@ function SummaryStatsCard({
   );
 }
 
+// Type for tracking issue positions in the grid
+interface IssuePosition {
+  rowIndex: number;
+  field: keyof UnitHighlights;
+  type: 'outlier' | 'warning' | 'critical';
+  message: string;
+}
+
+// Keyboard shortcuts help modal component
+function KeyboardShortcutsHelp({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+  const shortcuts = [
+    { keys: ['J', '↓'], description: 'Next issue' },
+    { keys: ['K', '↑'], description: 'Previous issue' },
+    { keys: ['Enter'], description: 'Edit selected cell' },
+    { keys: ['Escape'], description: 'Cancel editing / Clear selection' },
+    { keys: ['Tab'], description: 'Next cell' },
+    { keys: ['Shift', 'Tab'], description: 'Previous cell' },
+    { keys: ['⌘', 'S'], description: 'Save changes' },
+    { keys: ['⌘', 'Shift', 'A'], description: 'Approve extraction' },
+    { keys: ['N'], description: 'Add new unit' },
+    { keys: ['?'], description: 'Show this help' },
+  ];
+
+  return (
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={
+        <Group gap="sm">
+          <IconKeyboard size={24} />
+          <Text fw={600}>Keyboard Shortcuts</Text>
+        </Group>
+      }
+      size="md"
+    >
+      <Stack gap="xs">
+        {shortcuts.map((shortcut, index) => (
+          <Group key={index} justify="space-between" py="xs" style={{ borderBottom: index < shortcuts.length - 1 ? '1px solid var(--mantine-color-gray-2)' : 'none' }}>
+            <Group gap="xs">
+              {shortcut.keys.map((key, keyIndex) => (
+                <span key={keyIndex}>
+                  <Badge
+                    variant="light"
+                    color="gray"
+                    size="lg"
+                    style={{ fontFamily: 'monospace', minWidth: key.length > 1 ? 'auto' : 32, textAlign: 'center' }}
+                  >
+                    {key}
+                  </Badge>
+                  {keyIndex < shortcut.keys.length - 1 && (
+                    <Text component="span" mx={4} c="dimmed" size="sm">+</Text>
+                  )}
+                </span>
+              ))}
+            </Group>
+            <Text size="sm" c="dimmed">{shortcut.description}</Text>
+          </Group>
+        ))}
+      </Stack>
+      <Alert color="blue" variant="light" mt="md">
+        <Text size="sm">
+          Press <Badge variant="light" color="gray" size="sm" style={{ fontFamily: 'monospace' }}>J</Badge> / <Badge variant="light" color="gray" size="sm" style={{ fontFamily: 'monospace' }}>K</Badge> to quickly navigate between highlighted issues in the data grid.
+        </Text>
+      </Alert>
+    </Modal>
+  );
+}
+
 export default function ExtractionPage() {
   const params = useParams();
   const router = useRouter();
@@ -635,6 +704,9 @@ export default function ExtractionPage() {
     leaseEndDate: null,
     leaseStatus: null,
   });
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+  const [currentIssueIndex, setCurrentIssueIndex] = useState<number>(-1);
+  const gridRef = useRef<GridApi | null>(null);
 
   const fetchExtraction = useCallback(() => {
     try {
@@ -787,6 +859,144 @@ export default function ExtractionPage() {
   const highlights = useMemo(() => detectHighlights(units), [units]);
   const highlightSummary = useMemo(() => getHighlightSummary(highlights), [highlights]);
 
+  // Build sorted list of all issue positions for keyboard navigation
+  const issuePositions = useMemo<IssuePosition[]>(() => {
+    const positions: IssuePosition[] = [];
+    const fieldOrder: (keyof UnitHighlights)[] = ['monthlyRent', 'unitSqft', 'tenantName', 'status'];
+
+    highlights.forEach((unitHighlights, rowIndex) => {
+      for (const field of fieldOrder) {
+        const highlight = unitHighlights[field];
+        if (highlight) {
+          positions.push({
+            rowIndex,
+            field,
+            type: highlight.type,
+            message: highlight.message,
+          });
+        }
+      }
+    });
+
+    // Sort by type priority (critical first), then by row
+    const typePriority = { critical: 0, warning: 1, outlier: 2 };
+    positions.sort((a, b) => {
+      const priorityDiff = typePriority[a.type] - typePriority[b.type];
+      if (priorityDiff !== 0) return priorityDiff;
+      return a.rowIndex - b.rowIndex;
+    });
+
+    return positions;
+  }, [highlights]);
+
+  // Navigate to a specific issue in the grid
+  const navigateToIssue = useCallback((index: number) => {
+    if (index < 0 || index >= issuePositions.length || !gridRef.current) return;
+
+    const issue = issuePositions[index];
+    setCurrentIssueIndex(index);
+
+    // Ensure row is visible
+    gridRef.current.ensureIndexVisible(issue.rowIndex, 'middle');
+
+    // Set focus on the cell
+    gridRef.current.setFocusedCell(issue.rowIndex, issue.field);
+
+    // Flash the row briefly for visibility
+    const rowNode = gridRef.current.getDisplayedRowAtIndex(issue.rowIndex);
+    if (rowNode) {
+      gridRef.current.flashCells({ rowNodes: [rowNode], columns: [issue.field] });
+    }
+
+    // Show notification with issue details
+    notifications.show({
+      title: `${issue.type.charAt(0).toUpperCase() + issue.type.slice(1)} Issue (${index + 1}/${issuePositions.length})`,
+      message: issue.message,
+      color: issue.type === 'critical' ? 'red' : issue.type === 'warning' ? 'orange' : 'yellow',
+      autoClose: 2000,
+    });
+  }, [issuePositions]);
+
+  // Keyboard navigation handlers
+  const goToNextIssue = useCallback(() => {
+    if (issuePositions.length === 0) return;
+    const nextIndex = currentIssueIndex < issuePositions.length - 1 ? currentIssueIndex + 1 : 0;
+    navigateToIssue(nextIndex);
+  }, [currentIssueIndex, issuePositions.length, navigateToIssue]);
+
+  const goToPrevIssue = useCallback(() => {
+    if (issuePositions.length === 0) return;
+    const prevIndex = currentIssueIndex > 0 ? currentIssueIndex - 1 : issuePositions.length - 1;
+    navigateToIssue(prevIndex);
+  }, [currentIssueIndex, issuePositions.length, navigateToIssue]);
+
+  // Global keyboard event handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept when typing in inputs or modals are open
+      const target = e.target as HTMLElement;
+      const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+      if (addModalOpen || showShortcutsHelp) return;
+
+      // Save: Cmd/Ctrl + S
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+
+      // Approve: Cmd/Ctrl + Shift + A
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'A') {
+        e.preventDefault();
+        if (extraction?.status !== 'approved') {
+          handleApprove();
+        }
+        return;
+      }
+
+      // Skip other shortcuts if in input field
+      if (isInputField) return;
+
+      // Show help: ?
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowShortcutsHelp(true);
+        return;
+      }
+
+      // Add unit: N
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        setAddModalOpen(true);
+        return;
+      }
+
+      // Next issue: J or ArrowDown (when not in grid)
+      if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault();
+        goToNextIssue();
+        return;
+      }
+
+      // Previous issue: K or ArrowUp (when not in grid)
+      if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        goToPrevIssue();
+        return;
+      }
+
+      // Escape: Clear current issue selection
+      if (e.key === 'Escape') {
+        setCurrentIssueIndex(-1);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [addModalOpen, showShortcutsHelp, extraction?.status, goToNextIssue, goToPrevIssue, handleSave, handleApprove]);
+
   // Helper to get cell style based on highlight
   const getCellStyle = useCallback((rowIndex: number | null | undefined, field: keyof UnitHighlights) => {
     if (!showHighlighting || rowIndex === null || rowIndex === undefined) return {};
@@ -803,8 +1013,22 @@ export default function ExtractionPage() {
       critical: { backgroundColor: 'rgba(244, 67, 54, 0.25)', borderLeft: '3px solid #f44336' },
     };
 
-    return colors[highlight.type] || {};
-  }, [showHighlighting, highlights]);
+    const baseStyle = colors[highlight.type] || {};
+
+    // Add focus ring if this is the currently focused issue
+    if (currentIssueIndex >= 0 && currentIssueIndex < issuePositions.length) {
+      const currentIssue = issuePositions[currentIssueIndex];
+      if (currentIssue.rowIndex === rowIndex && currentIssue.field === field) {
+        return {
+          ...baseStyle,
+          outline: '2px solid var(--mantine-color-blue-5)',
+          outlineOffset: '-2px',
+        };
+      }
+    }
+
+    return baseStyle;
+  }, [showHighlighting, highlights, currentIssueIndex, issuePositions]);
 
   // Helper to get tooltip for highlighted cells
   const getHighlightTooltip = useCallback((rowIndex: number | null | undefined, field: keyof UnitHighlights): string | undefined => {
@@ -1040,6 +1264,40 @@ export default function ExtractionPage() {
             </div>
           </Group>
           <Group>
+            <Tooltip label="Keyboard shortcuts (?)">
+              <ActionIcon
+                variant="subtle"
+                size="lg"
+                onClick={() => setShowShortcutsHelp(true)}
+              >
+                <IconKeyboard size={20} />
+              </ActionIcon>
+            </Tooltip>
+            {issuePositions.length > 0 && showHighlighting && (
+              <Group gap="xs">
+                <Tooltip label="Previous issue (K)">
+                  <Button
+                    variant="light"
+                    size="xs"
+                    onClick={goToPrevIssue}
+                  >
+                    ← Prev
+                  </Button>
+                </Tooltip>
+                <Badge variant="light" color="gray">
+                  {currentIssueIndex >= 0 ? currentIssueIndex + 1 : '—'}/{issuePositions.length}
+                </Badge>
+                <Tooltip label="Next issue (J)">
+                  <Button
+                    variant="light"
+                    size="xs"
+                    onClick={goToNextIssue}
+                  >
+                    Next →
+                  </Button>
+                </Tooltip>
+              </Group>
+            )}
             <Button
               variant="outline"
               leftSection={<IconDownload size={16} />}
@@ -1171,9 +1429,11 @@ export default function ExtractionPage() {
               columnDefs={columnDefs}
               defaultColDef={defaultColDef}
               onCellValueChanged={onCellValueChanged}
+              onGridReady={(params) => { gridRef.current = params.api; }}
               rowSelection="multiple"
               suppressRowClickSelection={true}
               animateRows={false}
+              enableCellTextSelection={true}
               getRowId={(params) => String(params.data.unitNumber)}
             />
           </div>
@@ -1252,6 +1512,12 @@ export default function ExtractionPage() {
           <Button onClick={handleAddUnit}>Add Unit</Button>
         </Stack>
       </Modal>
+
+      {/* Keyboard Shortcuts Help Modal */}
+      <KeyboardShortcutsHelp
+        opened={showShortcutsHelp}
+        onClose={() => setShowShortcutsHelp(false)}
+      />
     </Container>
   );
 }
