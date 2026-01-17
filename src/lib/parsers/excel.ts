@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import type { MVPUnit, UnitStatus, StatedSummaryStats } from '../types';
+import { ClaudeExtractionResponseSchema } from '../validation/schema';
 
 /**
  * AI-Assisted Excel Parser
@@ -395,6 +396,319 @@ function isValidUnitNumber(value: unknown): boolean {
 }
 
 /**
+ * Detect if an Excel sheet has a non-standard format that would confuse
+ * the column-mapping approach. Returns reasons if format is unusual.
+ */
+function detectNonStandardFormat(sheet: XLSX.WorkSheet): {
+  isNonStandard: boolean;
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  const totalRows = range.e.r - range.s.r + 1;
+  const sampleRows = Math.min(60, totalRows);
+
+  // Heuristic 1: First column contains sequential large numbers (row IDs)
+  // This is a strong signal - files like "South Rent Roll" use row numbers in column A
+  const firstColValues: number[] = [];
+  for (let r = range.s.r; r < range.s.r + sampleRows; r++) {
+    const cell = sheet[XLSX.utils.encode_cell({ r, c: 0 })];
+    if (cell?.v !== undefined && typeof cell.v === 'number' && cell.v >= 100) {
+      firstColValues.push(cell.v);
+    }
+  }
+
+  if (firstColValues.length > sampleRows * 0.4) {
+    // Check if they're roughly sequential (within small gaps)
+    const sorted = [...firstColValues].sort((a, b) => a - b);
+    let sequentialPairs = 0;
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i] - sorted[i - 1] <= 20) sequentialPairs++;
+    }
+    if (sorted.length > 1 && sequentialPairs > sorted.length * 0.6) {
+      reasons.push('First column contains sequential large numbers (likely row identifiers)');
+    }
+  }
+
+  // Heuristic 2: Multiple building/section headers embedded in data area
+  // Look for address patterns or "Building X" patterns in the middle of data
+  let sectionHeaderCount = 0;
+  for (let r = range.s.r + 5; r < range.s.r + sampleRows; r++) {
+    const rowText: string[] = [];
+    for (let c = 0; c <= Math.min(6, range.e.c); c++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+      if (cell?.v) rowText.push(String(cell.v));
+    }
+    const combined = rowText.join(' ');
+
+    // Look for address patterns (e.g., "460 South Ave", "123 Main Street")
+    if (/\d+\s+\w+\s+(ave|st|rd|blvd|dr|ln|way|street|avenue|road|place|court|circle)/i.test(combined)) {
+      sectionHeaderCount++;
+    }
+    // Look for building identifiers
+    if (/^building\s+[a-z0-9]/i.test(combined.trim())) {
+      sectionHeaderCount++;
+    }
+  }
+
+  if (sectionHeaderCount >= 2) {
+    reasons.push(`Found ${sectionHeaderCount} embedded building/section headers in data area`);
+  }
+
+  // Heuristic 3: Multiple embedded subtotal rows (not just at end)
+  // Files with subtotals scattered through data are non-standard
+  let embeddedSubtotalCount = 0;
+  const subtotalRows: number[] = [];
+  for (let r = range.s.r + 5; r < Math.min(range.s.r + sampleRows, range.e.r - 3); r++) {
+    const rowText: string[] = [];
+    for (let c = 0; c <= Math.min(6, range.e.c); c++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+      if (cell?.v) rowText.push(String(cell.v));
+    }
+    const combined = rowText.join(' ').toLowerCase();
+
+    // Look for subtotal patterns like "12 Units", "X% Occupied"
+    if (/\d+\s*units/i.test(combined) && !/unit\s*(number|#|type|id)/i.test(combined)) {
+      embeddedSubtotalCount++;
+      subtotalRows.push(r);
+    }
+    if (/\d+\.?\d*%\s*occupied/i.test(combined)) {
+      // Only count if not already counted from "units" pattern
+      if (!subtotalRows.includes(r)) {
+        embeddedSubtotalCount++;
+        subtotalRows.push(r);
+      }
+    }
+  }
+
+  if (embeddedSubtotalCount >= 2) {
+    reasons.push(`Found ${embeddedSubtotalCount} embedded subtotal rows scattered in data`);
+  }
+
+  // Heuristic 4: Very wide sheets with many empty columns between data
+  // (suggests complex multi-section layout)
+  if (range.e.c > 20) {
+    let sparseColumnCount = 0;
+    for (let c = 5; c <= range.e.c; c++) {
+      let hasData = false;
+      for (let r = range.s.r; r < range.s.r + Math.min(20, sampleRows); r++) {
+        const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+        if (cell?.v !== undefined && cell.v !== '') {
+          hasData = true;
+          break;
+        }
+      }
+      if (!hasData) sparseColumnCount++;
+    }
+    if (sparseColumnCount > (range.e.c - 5) * 0.5) {
+      reasons.push('Sheet has many empty columns suggesting complex layout');
+    }
+  }
+
+  // Need at least 2 signals to consider format non-standard
+  // Exception: row identifiers in first column is a strong enough signal alone
+  const hasRowIdentifiers = reasons.some(r => r.includes('row identifiers'));
+  const isNonStandard = reasons.length >= 2 || (hasRowIdentifiers && reasons.length >= 1);
+
+  return { isNonStandard, reasons };
+}
+
+/**
+ * Full sheet to text conversion for non-standard format extraction
+ * Includes all rows (up to a limit) for complete context
+ */
+function fullSheetToText(sheet: XLSX.WorkSheet, maxRows: number = 200): string {
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  const lines: string[] = [];
+  const endCol = Math.min(range.e.c, 15); // Limit columns
+  const endRow = Math.min(range.e.r, range.s.r + maxRows - 1);
+
+  for (let r = range.s.r; r <= endRow; r++) {
+    const cells: string[] = [];
+    for (let c = range.s.c; c <= endCol; c++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+      const value = cell ? String(cell.v ?? '').trim() : '';
+      cells.push(value || '');
+    }
+    // Only include rows that have some content
+    if (cells.some(c => c !== '')) {
+      lines.push(`Row ${r}: [${cells.join(' | ')}]`);
+    }
+  }
+
+  if (range.e.r > endRow) {
+    lines.push(`... (${range.e.r - endRow} more rows not shown) ...`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Prompt for full AI extraction of non-standard Excel files
+ */
+const FULL_EXTRACTION_PROMPT = `You are extracting unit data from a rent roll Excel file that has an unusual format. The data may have:
+- Row identifiers in the first column (not unit numbers)
+- Multiple buildings/sections with headers between them
+- Subtotal rows scattered throughout
+- Non-standard column layouts
+
+Your PRIMARY goal is accurate unit count - do not miss ANY units and do not hallucinate units.
+
+STEP 1: Analyze the structure
+- Identify which column contains actual UNIT NUMBERS (apartment identifiers like "A1", "101", "B-12")
+- Identify section headers and subtotal rows to SKIP
+- Note any stated totals for verification
+
+STEP 2: Look for STATED SUMMARY VALUES:
+- Total unit count (e.g., "Total 36 Units", "36 units")
+- Total monthly rent
+- Occupancy percentages
+
+STEP 3: Extract ALL units. A unit row has:
+- A unit identifier (like "A1", "101", "B-12", "Unit 5") - NOT row numbers like 1007, 1008
+- Usually a tenant name or "Vacant" indicator
+- Often a rent amount
+
+DO NOT extract:
+- Row identifier numbers (1000, 1001, 1007, etc.)
+- Building/section headers (addresses, "Building A", etc.)
+- Subtotal rows ("12 Units", "100% Occupied", etc.)
+- Summary sections
+
+STEP 4: For each unit, extract:
+- unitNumber (REQUIRED): The unit identifier (A1, 101, etc.)
+- status: occupied, vacant, notice, model, applicant
+  - "Current", "Occupied" = occupied
+  - "Vacant", "Vacant-Unrented" = vacant
+  - "Notice", "Notice-Unrented", "NTV" = notice
+- monthlyRent: Rent amount (number only)
+- tenantName: Tenant name if present
+- unitType: Unit type/floorplan (e.g., "1/1.00", "2BR/1BA")
+- leaseStartDate: Lease start (YYYY-MM-DD format)
+- leaseEndDate: Lease end (YYYY-MM-DD format)
+
+Here is the Excel data:
+
+`;
+
+/**
+ * Parse non-standard Excel using full AI extraction (similar to PDF approach)
+ */
+async function parseExcelWithFullAI(
+  sheet: XLSX.WorkSheet,
+  detectionReasons: string[]
+): Promise<{
+  units: MVPUnit[];
+  statedUnitCount: number | null;
+  statedSummaryStats: StatedSummaryStats | null;
+  format: string;
+  modelUsed: string;
+  inputTokens: number;
+  outputTokens: number;
+}> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY environment variable is not set');
+  }
+
+  const client = new Anthropic({ apiKey });
+  const sheetText = fullSheetToText(sheet, 250);
+
+  const prompt = FULL_EXTRACTION_PROMPT + sheetText + `
+
+Detection notes: This file was flagged as non-standard because:
+${detectionReasons.map(r => '- ' + r).join('\n')}
+
+Return ONLY valid JSON in this exact format:
+{
+  "propertyName": "Property Name or null",
+  "statedTotalUnits": <number from document or null>,
+  "statedSummary": {
+    "totalMonthlyRent": <stated total rent or null>,
+    "totalSqft": <stated total sqft or null>,
+    "occupancyRate": <stated occupancy % or null>,
+    "occupiedUnits": <stated occupied count or null>,
+    "vacantUnits": <stated vacant count or null>
+  },
+  "units": [
+    {
+      "unitNumber": "A1",
+      "status": "occupied",
+      "monthlyRent": 750,
+      "tenantName": "John Smith",
+      "unitType": "1/1.00",
+      "leaseStartDate": "2024-01-15",
+      "leaseEndDate": "2025-01-14"
+    }
+  ],
+  "extractedCount": <count of units in array>,
+  "countMatch": <true if matches statedTotalUnits, false if not, null if no stated total>
+}`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5-20250929',
+    max_tokens: 16000,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textContent = response.content.find(c => c.type === 'text');
+  if (!textContent || textContent.type !== 'text') {
+    throw new Error('No text response from Claude');
+  }
+
+  const jsonMatch = textContent.text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('Could not find JSON in Claude response: ' + textContent.text.substring(0, 500));
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]);
+  const validated = ClaudeExtractionResponseSchema.parse(parsed);
+
+  // Convert to MVPUnit format
+  const units: MVPUnit[] = validated.units.map((unit, index) => ({
+    unitNumber: unit.unitNumber,
+    status: normalizeStatus(unit.status),
+    monthlyRent: unit.monthlyRent ?? null,
+    tenantName: unit.tenantName ?? null,
+    unitSqft: unit.unitSqft ?? null,
+    unitType: unit.unitType ?? null,
+    leaseStatus: unit.leaseStatus ?? null,
+    moveInDate: unit.moveInDate ?? null,
+    moveOutDate: unit.moveOutDate ?? null,
+    leaseStartDate: unit.leaseStartDate ?? null,
+    leaseEndDate: unit.leaseEndDate ?? null,
+    sourceRow: index + 1,
+  }));
+
+  // Build stated summary stats
+  const statedSummaryStats: StatedSummaryStats | null = validated.statedSummary ? {
+    totalUnits: validated.statedTotalUnits ?? null,
+    totalMonthlyRent: validated.statedSummary.totalMonthlyRent ?? null,
+    totalSqft: validated.statedSummary.totalSqft ?? null,
+    occupancyRate: validated.statedSummary.occupancyRate ?? null,
+    occupiedUnits: validated.statedSummary.occupiedUnits ?? null,
+    vacantUnits: validated.statedSummary.vacantUnits ?? null,
+  } : (validated.statedTotalUnits ? {
+    totalUnits: validated.statedTotalUnits,
+    totalMonthlyRent: null,
+    totalSqft: null,
+    occupancyRate: null,
+    occupiedUnits: null,
+    vacantUnits: null,
+  } : null);
+
+  return {
+    units,
+    statedUnitCount: validated.statedTotalUnits ?? null,
+    statedSummaryStats,
+    format: `full-ai-extraction (non-standard: ${detectionReasons[0] || 'unknown'})`,
+    modelUsed: response.model,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  };
+}
+
+/**
  * Parse Excel file using AI-assisted column mapping
  */
 export async function parseExcel(buffer: Buffer): Promise<{
@@ -410,6 +724,14 @@ export async function parseExcel(buffer: Buffer): Promise<{
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
 
+  // Check for non-standard format that would confuse column-mapping approach
+  const formatCheck = detectNonStandardFormat(sheet);
+  if (formatCheck.isNonStandard) {
+    console.log('[Excel Parser] Non-standard format detected:', formatCheck.reasons);
+    return parseExcelWithFullAI(sheet, formatCheck.reasons);
+  }
+
+  // Standard format: use column-mapping approach
   // Convert first rows to text for Claude analysis
   const sheetText = sheetToText(sheet, 35);
 

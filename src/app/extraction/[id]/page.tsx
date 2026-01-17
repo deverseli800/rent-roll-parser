@@ -49,6 +49,7 @@ import type { ColDef, CellValueChangedEvent, GridApi } from 'ag-grid-community';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
 import { getExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
 import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
+import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import * as XLSX from 'xlsx';
 
 // Register AG Grid modules
@@ -736,7 +737,14 @@ export default function ExtractionPage() {
   const handleSave = () => {
     setSaving(true);
     try {
-      const updated = updateStoredExtraction(id, { units, extractedUnitCount: units.length });
+      // Recalculate summaryStats based on current units
+      const newSummaryStats = calculateSummaryStats(units);
+
+      const updated = updateStoredExtraction(id, {
+        units,
+        extractedUnitCount: units.length,
+        summaryStats: newSummaryStats,
+      });
 
       if (updated) {
         setExtraction(updated);
@@ -760,7 +768,15 @@ export default function ExtractionPage() {
   const handleApprove = () => {
     setSaving(true);
     try {
-      const updated = updateStoredExtraction(id, { units, extractedUnitCount: units.length, status: 'approved' });
+      // Recalculate summaryStats based on current units
+      const newSummaryStats = calculateSummaryStats(units);
+
+      const updated = updateStoredExtraction(id, {
+        units,
+        extractedUnitCount: units.length,
+        summaryStats: newSummaryStats,
+        status: 'approved',
+      });
 
       if (updated) {
         setExtraction(updated);
@@ -784,9 +800,14 @@ export default function ExtractionPage() {
   const handleExportJSON = () => {
     if (!extraction) return;
 
+    // Recalculate summaryStats to ensure consistency in export
+    const currentSummaryStats = calculateSummaryStats(units);
+
     const exportData = {
       ...extraction,
       units,
+      extractedUnitCount: units.length,
+      summaryStats: currentSummaryStats,
       exportedAt: new Date().toISOString(),
     };
 
@@ -1330,6 +1351,22 @@ export default function ExtractionPage() {
             </Button>
           </Group>
         </Group>
+
+        {/* Non-standard format warning */}
+        {extraction.sourceFormat?.includes('full-ai-extraction') && (
+          <Alert
+            icon={<IconAlertTriangle size={20} />}
+            color="orange"
+            variant="light"
+            title="Non-Standard Format Detected"
+          >
+            <Text size="sm">
+              This file has an unusual structure (multi-building layout, embedded subtotals, or non-standard columns).
+              The parser used full AI extraction which may be less accurate than standard processing.
+              Please review the extracted data carefully.
+            </Text>
+          </Alert>
+        )}
 
         {/* Unit Count Card */}
         <UnitCountCard extraction={{ ...extraction, extractedUnitCount: units.length }} />
