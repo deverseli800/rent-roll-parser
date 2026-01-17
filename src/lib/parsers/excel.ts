@@ -645,8 +645,9 @@ Return ONLY valid JSON in this exact format:
   "countMatch": <true if matches statedTotalUnits, false if not, null if no stated total>
 }`;
 
+  // Use Opus for non-standard formats since these are the hardest to parse accurately
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
+    model: 'claude-opus-4-5-20251101',
     max_tokens: 16000,
     messages: [{ role: 'user', content: prompt }],
   });
