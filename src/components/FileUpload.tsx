@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import { Dropzone, MIME_TYPES } from '@mantine/dropzone';
 import { Group, Text, rem, Stack, Progress } from '@mantine/core';
 import { IconUpload, IconX, IconFile } from '@tabler/icons-react';
@@ -14,81 +14,23 @@ interface FileUploadProps {
 
 export function FileUpload({ onUploadComplete }: FileUploadProps) {
   const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [statusMessage, setStatusMessage] = useState('');
-  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Cleanup interval on unmount
-  useEffect(() => {
-    return () => {
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current);
-      }
-    };
-  }, []);
-
-  const startProgressSimulation = (isPdf: boolean) => {
-    // Simulate progress that slows down as it approaches 90%
-    // PDFs take much longer since we send the whole document to Claude
-    let currentProgress = 5;
-    setProgress(currentProgress);
-    setStatusMessage('Uploading file...');
-
-    // PDF: slower interval (500ms) and smaller increment multiplier (0.015)
-    // Excel: faster interval (200ms) and larger increment multiplier (0.03)
-    const intervalMs = isPdf ? 500 : 200;
-    const incrementMultiplier = isPdf ? 0.015 : 0.03;
-    const minIncrement = isPdf ? 0.2 : 0.5;
-
-    progressIntervalRef.current = setInterval(() => {
-      // Slow down as we get closer to 90%
-      const remaining = 90 - currentProgress;
-      const increment = Math.max(minIncrement, remaining * incrementMultiplier);
-      currentProgress = Math.min(89, currentProgress + increment);
-      setProgress(currentProgress);
-
-      // Update status message based on progress
-      if (currentProgress > 10 && currentProgress <= 25) {
-        setStatusMessage(isPdf ? 'Sending document to AI...' : 'Processing document...');
-      } else if (currentProgress > 25 && currentProgress <= 45) {
-        setStatusMessage(isPdf ? 'AI analyzing pages...' : 'Extracting unit data with AI...');
-      } else if (currentProgress > 45 && currentProgress <= 60) {
-        setStatusMessage(isPdf ? 'Extracting unit data from PDF...' : 'Analyzing rent roll structure...');
-      } else if (currentProgress > 60 && currentProgress <= 75) {
-        setStatusMessage('Validating extracted data...');
-      } else if (currentProgress > 75) {
-        setStatusMessage('Analyzing mismatches...');
-      }
-    }, intervalMs);
-  };
-
-  const stopProgressSimulation = () => {
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
-    }
-  };
 
   const handleDrop = async (files: File[]) => {
     if (files.length === 0) return;
 
     const file = files[0];
-    const isPdf = file.name.toLowerCase().endsWith('.pdf');
     setUploading(true);
-    startProgressSimulation(isPdf);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
 
+      // Returns immediately with a 'processing' record; extraction continues
+      // server-side and the extraction page polls for progress.
       const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
-
-      stopProgressSimulation();
-      setProgress(95);
-      setStatusMessage('Finalizing...');
 
       const extraction: RentRollExtraction = await response.json();
 
@@ -96,25 +38,16 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
         throw new Error(extraction.error || 'Upload failed');
       }
 
-      // Save to client-side storage
       saveExtraction(extraction);
 
-      setProgress(100);
-      setStatusMessage('Complete!');
-
-      const criticalIssues = extraction.validationIssues.filter(i => i.severity === 'critical').length;
-
       notifications.show({
-        title: 'Upload Complete',
-        message: `Extracted ${extraction.extractedUnitCount} units${
-          extraction.statedUnitCount ? ` (stated: ${extraction.statedUnitCount})` : ''
-        }`,
-        color: criticalIssues > 0 ? 'orange' : 'green',
+        title: 'Upload received',
+        message: 'Extraction is running — you can watch its progress.',
+        color: 'blue',
       });
 
       onUploadComplete(extraction.id);
     } catch (error) {
-      stopProgressSimulation();
       notifications.show({
         title: 'Upload Failed',
         message: error instanceof Error ? error.message : 'Unknown error',
@@ -122,8 +55,6 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       });
     } finally {
       setUploading(false);
-      setProgress(0);
-      setStatusMessage('');
     }
   };
 
@@ -135,6 +66,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
         accept={[
           MIME_TYPES.xlsx,
           'application/vnd.ms-excel',
+          'application/vnd.ms-excel.sheet.macroEnabled.12',
           MIME_TYPES.pdf,
         ]}
         loading={uploading}
@@ -186,7 +118,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
               Drag a rent roll here or click to select
             </Text>
             <Text size="sm" c="dimmed" mt={4}>
-              Supports Excel (.xlsx, .xls) and PDF files up to 50MB
+              Supports Excel (.xlsx, .xls, .xlsm) and PDF files up to 50MB
             </Text>
           </div>
         </Stack>
@@ -194,9 +126,9 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
 
       {uploading && (
         <Stack gap="xs">
-          <Progress value={progress} animated size="lg" radius="md" color="brand" />
+          <Progress value={100} animated size="lg" radius="md" color="brand" />
           <Text size="sm" c="dimmed" ta="center" fw={500}>
-            {statusMessage} {Math.round(progress)}%
+            Uploading…
           </Text>
         </Stack>
       )}

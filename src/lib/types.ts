@@ -2,6 +2,31 @@
 
 export type UnitStatus = 'occupied' | 'vacant' | 'notice' | 'model' | 'down' | 'applicant';
 
+// Charge code categories for normalization
+export type ChargeCategory =
+  | 'base_rent'
+  | 'pet'
+  | 'parking'
+  | 'storage'
+  | 'utility'
+  | 'trash'
+  | 'pest_control'
+  | 'internet'
+  | 'admin_fee'
+  | 'deposit_waiver'
+  | 'credit_builder'
+  | 'concession'
+  | 'mtm_fee'
+  | 'damages'
+  | 'other';
+
+// Individual charge on a unit
+export interface UnitCharge {
+  code: string;           // Raw code as seen in document (e.g., "Pet Rent - Dog - Bella")
+  amount: number;         // Charge amount (negative for concessions)
+  category: ChargeCategory;  // Normalized category
+}
+
 export interface MVPUnit {
   unitNumber: string;
   status: UnitStatus;
@@ -17,9 +42,20 @@ export interface MVPUnit {
   leaseStartDate: string | null;     // ISO date string
   leaseEndDate: string | null;       // ISO date string
 
+  // Itemized charges (if document has charge breakdowns)
+  charges?: UnitCharge[];
+  totalCharges?: number;             // Sum of all charges for this unit
+
   // Metadata for validation
   sourceRow?: number;
   sourcePage?: number;
+}
+
+// Live progress for an extraction being processed in the background
+export interface ExtractionProgress {
+  stage: string;            // e.g. "extracting", "verifying", "validating"
+  detail: string | null;    // e.g. 'sheet "Report1" — attempt 2 (claude-opus-4-8), 41KB streamed'
+  updatedAt: string;        // ISO timestamp of last heartbeat
 }
 
 export interface ValidationIssue {
@@ -28,6 +64,14 @@ export interface ValidationIssue {
   message: string;
   unitNumbers?: string[];
   details?: Record<string, unknown>;
+}
+
+// Property-level charge summary
+export interface ChargeCategorySummary {
+  category: ChargeCategory;
+  totalAmount: number;
+  unitCount: number;
+  rawCodes: string[];  // Unique raw codes that mapped to this category
 }
 
 export interface SummaryStats {
@@ -46,6 +90,11 @@ export interface SummaryStats {
   averageRent: number | null;
   averageSqft: number | null;
   averageRentPerSqft: number | null;
+
+  // Charge summary (if document has itemized charges)
+  hasItemizedCharges: boolean;
+  chargeSummary?: ChargeCategorySummary[];
+  totalChargesAmount?: number;  // Sum of all non-rent charges
 }
 
 // Stated summary values extracted from the document (not calculated)
@@ -140,6 +189,9 @@ export interface RentRollExtraction {
 
   // Error info if failed
   error: string | null;
+
+  // Live progress while status === 'processing' (server-side jobs only)
+  progress?: ExtractionProgress | null;
 }
 
 export interface ExtractionSummary {

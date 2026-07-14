@@ -47,7 +47,7 @@ import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent, GridApi } from 'ag-grid-community';
 import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
-import { getExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
+import { getExtraction, saveExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
 import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
 import { calculateSummaryStats } from '@/lib/utils/summaryStats';
 import * as XLSX from 'xlsx';
@@ -709,20 +709,42 @@ export default function ExtractionPage() {
   const [currentIssueIndex, setCurrentIssueIndex] = useState<number>(-1);
   const gridRef = useRef<GridApi | null>(null);
 
-  const fetchExtraction = useCallback(() => {
+  const fetchExtraction = useCallback(async () => {
     try {
-      const data = getExtraction(id);
-      if (data) {
-        setExtraction(data);
-        setUnits(data.units);
-      } else {
-        notifications.show({
-          title: 'Error',
-          message: 'Extraction not found',
-          color: 'red',
-        });
-        router.push('/');
+      const local = getExtraction(id);
+      if (local && local.status !== 'processing') {
+        // Completed extractions live in localStorage (including review edits)
+        setExtraction(local);
+        setUnits(local.units);
+        return;
       }
+
+      // Missing locally or still processing: ask the server
+      const response = await fetch(`/api/extraction/${id}`);
+      if (response.ok) {
+        const server: RentRollExtraction = await response.json();
+        setExtraction(server);
+        setUnits(server.units);
+        if (server.status !== 'processing') {
+          saveExtraction(server);
+        }
+        return;
+      }
+
+      if (local) {
+        // Server lost it (restart) but we have the processing stub — show it;
+        // polling will surface the stale/error state.
+        setExtraction(local);
+        setUnits(local.units);
+        return;
+      }
+
+      notifications.show({
+        title: 'Error',
+        message: 'Extraction not found',
+        color: 'red',
+      });
+      router.push('/');
     } catch (error) {
       console.error('Error fetching extraction:', error);
     } finally {
@@ -733,6 +755,35 @@ export default function ExtractionPage() {
   useEffect(() => {
     fetchExtraction();
   }, [fetchExtraction]);
+
+  // Poll the server while the background job is running
+  useEffect(() => {
+    if (extraction?.status !== 'processing') return;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/extraction/${id}`);
+        if (!response.ok) return;
+        const server: RentRollExtraction = await response.json();
+        setExtraction(server);
+        if (server.status !== 'processing') {
+          setUnits(server.units);
+          saveExtraction(server);
+          notifications.show({
+            title: server.status === 'error' ? 'Extraction failed' : 'Extraction complete',
+            message: server.status === 'error'
+              ? server.error ?? 'Unknown error'
+              : `Extracted ${server.extractedUnitCount} units${server.statedUnitCount ? ` (stated: ${server.statedUnitCount})` : ''}`,
+            color: server.status === 'error' ? 'red' : 'green',
+          });
+        }
+      } catch {
+        // transient network error — keep polling
+      }
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [extraction?.status, id]);
 
   const handleSave = () => {
     setSaving(true);
@@ -1264,6 +1315,47 @@ export default function ExtractionPage() {
     return (
       <Container size="xl" py="xl">
         <Text>Extraction not found</Text>
+      </Container>
+    );
+  }
+
+  if (extraction.status === 'processing') {
+    const elapsedMs = Date.now() - new Date(extraction.uploadedAt).getTime();
+    const elapsedMin = Math.floor(elapsedMs / 60000);
+    const elapsedSec = Math.floor((elapsedMs % 60000) / 1000);
+    return (
+      <Container size="md" py="xl">
+        <Stack gap="lg">
+          <Group>
+            <ActionIcon variant="subtle" onClick={() => router.push('/')}>
+              <IconArrowLeft size={20} />
+            </ActionIcon>
+            <div>
+              <Title order={2}>{extraction.fileName}</Title>
+              <Text c="dimmed" size="sm">Extraction in progress</Text>
+            </div>
+          </Group>
+          <Paper withBorder p="xl" radius="lg">
+            <Stack align="center" gap="md" py="lg">
+              <Loader size="lg" />
+              <Text fw={600} size="lg" tt="capitalize">
+                {extraction.progress?.stage ?? 'processing'}…
+              </Text>
+              {extraction.progress?.detail && (
+                <Text size="sm" c="dimmed" ta="center">
+                  {extraction.progress.detail}
+                </Text>
+              )}
+              <Text size="xs" c="dimmed">
+                Elapsed: {elapsedMin > 0 ? `${elapsedMin}m ` : ''}{elapsedSec}s
+                {' — large documents can take 5–25 minutes.'}
+              </Text>
+              <Text size="xs" c="dimmed">
+                You can leave this page; processing continues on the server.
+              </Text>
+            </Stack>
+          </Paper>
+        </Stack>
       </Container>
     );
   }
