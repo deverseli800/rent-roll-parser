@@ -1,4 +1,5 @@
 import type { MVPUnit, SummaryStats } from '../types';
+import { aggregateCharges } from './chargeNormalization';
 
 /**
  * Calculate summary statistics from extracted units
@@ -60,6 +61,19 @@ export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
     }
   }
 
+  // Check if any units have itemized charges
+  const unitsWithCharges = units.filter(u => u.charges && u.charges.length > 0);
+  const hasItemizedCharges = unitsWithCharges.length > 0;
+
+  // Aggregate charges if present
+  let chargeSummary;
+  let totalChargesAmount;
+  if (hasItemizedCharges) {
+    const chargeAggregation = aggregateCharges(units);
+    chargeSummary = chargeAggregation.summary;
+    totalChargesAmount = chargeAggregation.totalAmount;
+  }
+
   return {
     totalUnits,
     occupiedUnits,
@@ -74,5 +88,8 @@ export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
     averageRent,
     averageSqft,
     averageRentPerSqft,
+    hasItemizedCharges,
+    chargeSummary,
+    totalChargesAmount,
   };
 }

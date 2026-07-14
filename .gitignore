@@ -43,3 +43,9 @@ next-env.d.ts
 # Local data storage
 data/
 .idea/
+
+# Eval corpus: contains real rent rolls with tenant PII — keep local
+eval/corpus/
+eval/previews/
+eval/groundtruth/
+eval/runs/

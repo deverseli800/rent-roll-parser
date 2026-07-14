@@ -1,5 +1,5 @@
-import { parseExcel } from './excel';
-import { parsePDF } from './pdf';
+import { parseExcelV2 } from './excelV2';
+import { parsePDFV2 } from './pdfV2';
 import type { MVPUnit, StatedSummaryStats } from '../types';
 
 export interface ParseResult {
@@ -21,17 +21,18 @@ export interface ParseResult {
  */
 export async function parseRentRoll(
   buffer: Buffer,
-  fileName: string
+  fileName: string,
+  report?: import('./extractionCore').ProgressReporter
 ): Promise<ParseResult> {
   const extension = fileName.toLowerCase().split('.').pop();
 
-  if (extension === 'xlsx' || extension === 'xls') {
-    const result = await parseExcel(buffer);
+  if (extension === 'xlsx' || extension === 'xls' || extension === 'xlsm') {
+    const result = await parseExcelV2(buffer, report);
     return {
       units: result.units,
       statedUnitCount: result.statedUnitCount,
       statedSummaryStats: result.statedSummaryStats,
-      propertyName: null, // Excel parser doesn't extract property name yet
+      propertyName: result.propertyName,
       sourceType: 'excel',
       sourceFormat: result.format,
       pageCount: null,
@@ -42,7 +43,7 @@ export async function parseRentRoll(
   }
 
   if (extension === 'pdf') {
-    const result = await parsePDF(buffer);
+    const result = await parsePDFV2(buffer, report);
     return {
       units: result.units,
       statedUnitCount: result.statedUnitCount,

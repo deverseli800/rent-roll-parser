@@ -1,8 +1,9 @@
 import * as XLSX from 'xlsx';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import type { MVPUnit, UnitStatus, StatedSummaryStats } from '../types';
+import type { MVPUnit, UnitStatus, StatedSummaryStats, UnitCharge } from '../types';
 import { ClaudeExtractionResponseSchema } from '../validation/schema';
+import { createCharge } from '../utils/chargeNormalization';
 
 /**
  * AI-Assisted Excel Parser
@@ -44,6 +45,15 @@ const ColumnMappingResponseSchema = z.object({
   dataEndRow: z.number().nullable().describe('0-indexed row where unit data ends (before summary sections). null if no summary section found'),
   skipPatterns: z.array(z.string()).describe('Text patterns that indicate non-unit rows (section headers, totals)'),
   notes: z.string().optional().describe('Any observations about the file format'),
+  // Charge code detection
+  hasItemizedCharges: z.boolean().describe('True if document has per-unit charge breakdowns (not just total rent)'),
+  chargeStructure: z.enum(['block', 'inline', 'none']).describe(
+    'block = charges on separate rows below each unit (with Total row), inline = multiple charge columns on same row as unit, none = no itemized charges'
+  ),
+  chargeColumns: z.object({
+    description: z.number().nullable().describe('Column index for charge description/code'),
+    amount: z.number().nullable().describe('Column index for charge amount'),
+  }).nullable().describe('Column indices for charge data (null if no charges or block structure)'),
 });
 
 type ColumnMapping = z.infer<typeof ColumnMappingResponseSchema>;
@@ -100,7 +110,7 @@ function sheetToText(sheet: XLSX.WorkSheet, firstRows: number = 35, lastRows: nu
   const lines: string[] = [];
   const totalRows = range.e.r - range.s.r + 1;
 
-  const endCol = Math.min(range.e.c, 20); // Limit columns to avoid token overflow
+  const endCol = Math.min(range.e.c, 25); // Limit columns to avoid token overflow (25 to capture charge columns)
 
   // First N rows (headers and initial data)
   const firstEndRow = Math.min(range.s.r + firstRows - 1, range.e.r);
@@ -201,6 +211,29 @@ IMPORTANT:
 - The rent column should have dollar amounts, not codes
 - If a field isn't present, use null
 
+8. DETECT ITEMIZED CHARGES:
+   Look for charge breakdowns per unit. Common patterns:
+
+   BLOCK STRUCTURE (charges on separate rows below each unit):
+   - Unit row has unit number, tenant, status, then a charge like "Rent" with amount
+   - Subsequent rows have charge descriptions and amounts (Wi-Fi Fee, Pet Rent, Trash, etc.)
+   - Then a "Total" row sums the charges
+   - Then blank row(s) before next unit
+   - Example: Row has "1001 | B2 | 1065 | John Smith | C | 2045 | Rent | 1650"
+              Next rows have "Wi-Fi Fee | 55", "Pest Control | 5", "Total | 1710"
+
+   INLINE STRUCTURE (multiple charge columns on same row):
+   - Each row has the unit plus multiple charge columns
+   - Example columns: Unit | Tenant | Rent | Pet Fee | Parking | Total
+
+   NO CHARGES:
+   - Document only shows total rent per unit, no breakdown
+   - This is the most common format
+
+   Set hasItemizedCharges=true only if you see actual charge breakdowns.
+   Set chargeStructure to 'block', 'inline', or 'none'.
+   For block structure, identify the Description and Amount columns.
+
 Here are the rows:
 
 ${sheetText}
@@ -232,7 +265,13 @@ Respond with ONLY valid JSON matching this structure:
   "dataStartRow": <0-indexed row where unit data begins>,
   "dataEndRow": <0-indexed row where unit data ends, BEFORE any summary sections like "Unit Type Occupancy" or "Total". null if no summary section found>,
   "skipPatterns": ["pattern1", "pattern2"],
-  "notes": "optional observations"
+  "notes": "optional observations",
+  "hasItemizedCharges": <true if document has per-unit charge breakdowns, false otherwise>,
+  "chargeStructure": <"block" | "inline" | "none">,
+  "chargeColumns": {
+    "description": <column index for charge description or null>,
+    "amount": <column index for charge amount or null>
+  }
 }`;
 
   const response = await client.messages.create({
@@ -393,6 +432,110 @@ function isValidUnitNumber(value: unknown): boolean {
   if (/^\d{6,}$/.test(str)) return false;
 
   return true;
+}
+
+/**
+ * Extract charges for a unit in block structure format.
+ * Looks at the unit row and subsequent rows until hitting "Total" or next unit.
+ *
+ * @param sheet - The worksheet
+ * @param unitRow - The row number of the unit (0-indexed)
+ * @param chargeDescCol - Column index for charge description
+ * @param chargeAmtCol - Column index for charge amount
+ * @param unitNumberCol - Column index for unit number (to detect next unit)
+ * @param maxCol - Maximum column to read
+ * @returns Object with charges array, total, and how many rows were consumed
+ */
+function extractBlockCharges(
+  sheet: XLSX.WorkSheet,
+  unitRow: number,
+  chargeDescCol: number,
+  chargeAmtCol: number,
+  unitNumberCol: number,
+  maxCol: number
+): { charges: UnitCharge[]; totalCharges: number; rowsConsumed: number } {
+  const charges: UnitCharge[] = [];
+  let totalCharges = 0;
+  let rowsConsumed = 0;
+
+  // First, check the unit row itself for a charge
+  const unitRowDescCell = sheet[XLSX.utils.encode_cell({ r: unitRow, c: chargeDescCol })];
+  const unitRowAmtCell = sheet[XLSX.utils.encode_cell({ r: unitRow, c: chargeAmtCol })];
+
+  if (unitRowDescCell?.v && unitRowAmtCell?.v !== undefined) {
+    const desc = String(unitRowDescCell.v).trim();
+    const amt = parseNumber(unitRowAmtCell.v);
+    if (desc && desc.toLowerCase() !== 'total' && amt !== null) {
+      charges.push(createCharge(desc, amt));
+      totalCharges += amt;
+    }
+  }
+
+  // Now scan subsequent rows for more charges
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  let r = unitRow + 1;
+
+  while (r <= range.e.r) {
+    // Check if this row has a unit number (meaning next unit)
+    const unitCell = sheet[XLSX.utils.encode_cell({ r, c: unitNumberCol })];
+    if (unitCell?.v && isValidUnitNumber(unitCell.v)) {
+      break; // Hit next unit
+    }
+
+    // Get description and amount
+    const descCell = sheet[XLSX.utils.encode_cell({ r, c: chargeDescCol })];
+    const amtCell = sheet[XLSX.utils.encode_cell({ r, c: chargeAmtCol })];
+
+    const desc = descCell?.v ? String(descCell.v).trim() : '';
+    const amt = amtCell?.v !== undefined ? parseNumber(amtCell.v) : null;
+
+    // Check for "Total" row - stop here
+    if (desc.toLowerCase() === 'total') {
+      rowsConsumed = r - unitRow;
+      break;
+    }
+
+    // If we have a valid charge, add it
+    if (desc && amt !== null) {
+      charges.push(createCharge(desc, amt));
+      totalCharges += amt;
+    }
+
+    // Check if row is completely empty (blank row between units)
+    // Must check charge columns too since they may be far to the right
+    let hasAnyContent = false;
+    for (let c = 0; c <= Math.min(maxCol, 10); c++) {
+      const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+      if (cell?.v !== undefined && cell.v !== '') {
+        hasAnyContent = true;
+        break;
+      }
+    }
+    if (!hasAnyContent) {
+      // Also check the charge description/amount columns specifically
+      const chkDesc = sheet[XLSX.utils.encode_cell({ r, c: chargeDescCol })];
+      const chkAmt = sheet[XLSX.utils.encode_cell({ r, c: chargeAmtCol })];
+      if (chkDesc?.v || chkAmt?.v !== undefined) {
+        hasAnyContent = true;
+      }
+    }
+    if (!hasAnyContent) {
+      rowsConsumed = r - unitRow;
+      break;
+    }
+
+    r++;
+  }
+
+  if (rowsConsumed === 0) {
+    rowsConsumed = r - unitRow;
+  }
+
+  return {
+    charges,
+    totalCharges: Math.round(totalCharges * 100) / 100,
+    rowsConsumed,
+  };
 }
 
 /**
@@ -817,6 +960,31 @@ export async function parseExcel(buffer: Buffer): Promise<{
       ? parseDate(row[mapping.columns.leaseEndDate])
       : null;
 
+    // Extract charges if this document has block-structure itemized charges
+    let charges: UnitCharge[] | undefined;
+    let totalCharges: number | undefined;
+
+    if (
+      mapping.hasItemizedCharges &&
+      mapping.chargeStructure === 'block' &&
+      mapping.chargeColumns !== null &&
+      mapping.chargeColumns.description !== null &&
+      mapping.chargeColumns.amount !== null
+    ) {
+      const chargeResult = extractBlockCharges(
+        sheet,
+        r,
+        mapping.chargeColumns.description,
+        mapping.chargeColumns.amount,
+        mapping.columns.unitNumber!,
+        range.e.c
+      );
+      if (chargeResult.charges.length > 0) {
+        charges = chargeResult.charges;
+        totalCharges = chargeResult.totalCharges;
+      }
+    }
+
     const unit: MVPUnit = {
       unitNumber,
       status,
@@ -829,6 +997,8 @@ export async function parseExcel(buffer: Buffer): Promise<{
       moveOutDate,
       leaseStartDate,
       leaseEndDate,
+      charges,
+      totalCharges,
       sourceRow: r + 1,
     };
 
