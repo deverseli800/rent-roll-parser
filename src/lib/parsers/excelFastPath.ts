@@ -132,10 +132,11 @@ Decide:
 4. block (for layout="row" use {chargeDescCol:-1, chargeAmtCol:-1} and [] for every code list; for layout="block"): chargeDescCol/chargeAmtCol = cell indices of charge description and amount on CHARGE rows, and rentChargeCodes = the exact charge-code strings whose amounts make up the unit's rent (e.g. ["rent"], ["rnt"], ["rent", "housing assistance rent"]). Include rent-subsidy codes; EXCLUDE fee codes (trash, pet, parking, amenity) and total lines.
    subsidyChargeCodes = the subset of rentChargeCodes that are subsidy/housing-assistance codes (also keep them in rentChargeCodes — monthlyRent stays the TOTAL contract rent).
    employeeDiscountChargeCodes = codes for recurring employee/manager discounts (e.g. "empl", "employee discount"); NOT in rentChargeCodes.
-   concessionChargeCodes = codes for recurring concessions/credits (e.g. "conc", "concession"); NOT in rentChargeCodes.
+   concessionChargeCodes = codes for recurring monthly RENT concessions; NOT in rentChargeCodes.
+   Charge codes are often cryptic abbreviations ("conc", "como", "empl", "rentcr"). Classify EVERY code that appears in the COLUMN VALUE INVENTORY below (if provided) using its name, sign, and magnitude: codes with clearly NEGATIVE sums are concessions/discounts/credits, not fees. concessionChargeCodes must contain ONLY rent concessions — exclude one-time/"other" concession codes (e.g. "coro" next to "como") and credits tied to a specific amenity (garage/carport/parking credits like "crgar", "crcarp" belong to no list).
 5. skipPatterns: lowercase substrings identifying NON-unit rows to skip when they appear in the unit-number cell or the first cells (e.g. "total", "summary", floorplan group headers).
 6. stopMarkers: lowercase substrings marking where unit data ENDS (e.g. "future residents/applicants", "summary groups", "unit type occupancy", "totals"). The walker stops at the first row containing any of these. Sections AFTER the stop (future residents, applicants, summaries) must not be extracted.
-7. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current rent total; a stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
+7. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current RENT total — the figure matching the rent charge code alone (a "Summary of Charges by Charge Code" rent line is the best source). It is NOT a total-charges/"Lease Charges" total that adds fees (trash, pet, parking) on top of rent, and NOT market rent. A stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
 
 If unit rows in this sheet don't share one consistent column layout, or you are unsure the mapping is exact, answer layout="unsupported" — a slower full extraction will handle it. Correctness matters more than coverage.`;
 
@@ -204,6 +205,49 @@ function rowText(sheet: XLSX.WorkSheet, r: number, maxCol: number): string {
 
 function matchesAny(text: string, patterns: string[]): boolean {
   return patterns.some(p => p && text.includes(p.toLowerCase()));
+}
+
+/**
+ * Compact per-column inventory of repeated short string values (charge codes,
+ * statuses) across the WHOLE sheet, with counts and — when the next column is
+ * numeric — sums. The structure sample shows only first/middle/last rows, so
+ * rare-but-important codes (7 "como" concession rows in a 2,090-row sheet)
+ * never reach the mapper without this. Sign and magnitude are what let the
+ * mapper classify cryptic codes: a code summing to -10,784 is a concession.
+ */
+export function columnValueInventory(sheet: XLSX.WorkSheet): string {
+  const ref = sheet['!ref'];
+  if (!ref) return '';
+  const range = XLSX.utils.decode_range(ref);
+  const maxCol = Math.min(range.e.c, 40);
+  const lines: string[] = [];
+  for (let c = range.s.c; c <= maxCol; c++) {
+    const counts = new Map<string, { n: number; sum: number; sumN: number }>();
+    let occurrences = 0;
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      const cell = cellValue(sheet, r, c);
+      if (!cell || cell.t !== 's') continue;
+      const v = String(cell.v).trim();
+      if (!v || v.length > 25 || /\d{3,}/.test(v)) continue; // skip long text and id-like values
+      occurrences++;
+      const e = counts.get(v) ?? { n: 0, sum: 0, sumN: 0 };
+      e.n++;
+      const amt = readNumber(cellValue(sheet, r, c + 1));
+      if (amt !== null) { e.sum += amt; e.sumN++; }
+      counts.set(v, e);
+    }
+    // Only code-like columns: few distinct values, each repeated.
+    if (counts.size < 2 || counts.size > 25 || occurrences < 10) continue;
+    const parts = [...counts.entries()]
+      .sort((a, b) => b[1].n - a[1].n)
+      .map(([v, e]) => {
+        const sum = e.sumN >= e.n * 0.6 ? `, next-col sum ${Math.round(e.sum * 100) / 100}` : '';
+        return `"${v}" (${e.n} rows${sum})`;
+      });
+    lines.push(`Cell index ${c}: ${parts.join(', ')}`);
+  }
+  if (lines.length === 0) return '';
+  return `\n\nCOLUMN VALUE INVENTORY — every repeated short text value per cell index across ALL rows of the sheet (the row sample above omits rows; rare charge codes appear here even when no sampled row shows them). Use it ONLY to classify charge codes. The counts/sums are computed by code, NOT stated by the document — statedTotalUnits/statedSummary must come from totals printed in the document rows, never from these sums (a "Total" code's sum here is a charges total, not the stated rent total):\n${lines.join('\n')}`;
 }
 
 /** Ask the mapper model for the sheet structure. */
@@ -392,7 +436,7 @@ export async function tryFastPath(
   usages: AIUsage[]
 ): Promise<ExtractionResult | null> {
   try {
-    const { structure, usage } = await mapSheetStructure(sampleText);
+    const { structure, usage } = await mapSheetStructure(sampleText + columnValueInventory(sheet));
     usages.push(usage);
     const result = applyStructure(sheet, structure);
     if (!result || result.units.length === 0) return null;
