@@ -137,7 +137,7 @@ DUPLICATES: if the same unit appears on multiple rows (e.g., current resident + 
 
 MULTI-PROPERTY DOCUMENTS: some documents cover multiple buildings/properties. Extract units from ALL of them. Different buildings can each have a unit "1A" — that is not a duplicate; output both.
 
-STATED TOTALS: separately report any totals STATED in the document itself (total unit count, total monthly rent, occupancy) in statedTotalUnits/statedSummary. These must come from the document text, not from your own arithmetic. If the document states an ANNUAL total rent, convert to monthly (divide by 12). If multiple properties each state totals, sum them.
+STATED TOTALS: separately report any totals STATED in the document itself (total unit count, total monthly rent, occupancy) in statedTotalUnits/statedSummary. These must come from the document text, not from your own arithmetic. If the document states an ANNUAL total rent, convert to monthly (divide by 12). If multiple properties each state totals, sum them. When the document shows MULTIPLE total figures, statedSummary.totalMonthlyRent must be the total of CURRENT/ACTUAL RENT — the figure matching the rent column you extracted per unit — NOT a market/potential/scheduled rent total, and NOT a total-charges figure that adds fees (trash, pet, parking) on top of rent.
 
 Before finishing, recount: every unit row in the document must appear exactly once in your output.`;
 
@@ -211,6 +211,98 @@ export function toStatedSummaryStats(r: ExtractionResult): StatedSummaryStats | 
     occupiedUnits: s?.occupiedUnits ?? null,
     vacantUnits: s?.vacantUnits ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Stated-summary preview: a quick first AI pass that reads ONLY the totals the
+// document states about itself (unit count, occupancy, total rent/sqft) so the
+// UI can show something within seconds, while the full unit-level extraction
+// (minutes for large documents) runs afterwards.
+//
+// The document content block(s) are shared verbatim with the full extraction
+// and carry cache_control, so the second call reads the document from the
+// prompt cache (~0.1x input price) instead of paying for it twice. Two
+// non-obvious constraints (both verified empirically):
+//   1. The cache entry only becomes readable once this call streams, which is
+//      why the preview runs to completion BEFORE the ladder starts.
+//   2. The structured-output schema is rendered into the prompt prefix, so a
+//      different schema breaks the cache. The preview therefore uses the SAME
+//      EXTRACTION_SCHEMA and instructs the model to return units: [] — the
+//      schema allows an empty array and the output stays tiny.
+// ---------------------------------------------------------------------------
+
+const PREVIEW_PROMPT = `Report ONLY the summary information this rent roll document STATES about itself — do NOT extract or enumerate individual units. Return "units" as an EMPTY array []; a separate full extraction handles the units.
+
+Look for a summary/totals section (often at the very top or bottom): "Total Units", a "Summary" block, occupancy percentages, total monthly rent / total sqft rows, current-vs-vacant unit counts.
+- propertyName: the property name shown in the document, if any.
+- statedTotalUnits: the total unit count the document STATES (not your own count of rows).
+- statedSummary: totals the document states. Use null for anything the document does not explicitly state — do NOT compute, sum, or estimate values yourself.
+  When the document shows MULTIPLE summary figures, report the CURRENT/actual ones: totalMonthlyRent is the current RENT total (not market/scheduled/potential rent, and not a total-charges figure that adds fees); occupancyRate is current physical occupancy (not projected, leased %, or economic occupancy).
+- units: [] — always empty in this pass.
+This is a fast first pass. Respond as quickly as possible.`;
+
+export interface PreviewData {
+  propertyName: string | null;
+  statedUnitCount: number | null;
+  statedSummaryStats: StatedSummaryStats | null;
+}
+
+/**
+ * Quick stated-summary read. `docContent` must be the exact document block(s)
+ * the full extraction will send (same bytes, cache_control included) so the
+ * prompt-cache prefix is shared. Never throws — the preview is a UX
+ * enhancement, not a pipeline dependency.
+ */
+export async function extractStatedPreview(
+  docContent: Anthropic.ContentBlockParam[],
+  usages: AIUsage[],
+  report?: ProgressReporter,
+  subject?: string
+): Promise<PreviewData | null> {
+  const where = subject ? ` of ${subject}` : '';
+  report?.('extracting', `quick scan${where} — reading the document's stated totals`, {
+    kind: 'info',
+    message: `Quick first pass: reading the summary totals the document states about itself`,
+  });
+  try {
+    const { data, usage } = await extractStructured<ExtractionResult>({
+      model: MODELS.fast,
+      // Same schema as the full extraction — REQUIRED for the cache prefix to
+      // match (the schema is part of the rendered prompt). See note above.
+      content: [...docContent, { type: 'text', text: PREVIEW_PROMPT }],
+      schema: EXTRACTION_SCHEMA,
+      maxTokens: 16000, // adaptive thinking shares this budget; the answer itself is tiny
+    });
+    usages.push(usage);
+    const preview: PreviewData = {
+      propertyName: data.propertyName ?? null,
+      statedUnitCount: data.statedTotalUnits ?? null,
+      statedSummaryStats: toStatedSummaryStats({ ...data, units: [] }),
+    };
+
+    const s = preview.statedSummaryStats;
+    const parts: string[] = [];
+    if (preview.statedUnitCount !== null) parts.push(`${preview.statedUnitCount} units`);
+    if (s?.occupancyRate != null) parts.push(`${s.occupancyRate.toFixed(1)}% occupancy`);
+    else if (s?.occupiedUnits != null) parts.push(`${s.occupiedUnits} occupied`);
+    if (s?.totalMonthlyRent != null) parts.push(`$${Math.round(s.totalMonthlyRent).toLocaleString('en-US')} monthly rent`);
+    const label = preview.propertyName ? `${preview.propertyName}: ` : '';
+    report?.('extracting', undefined, {
+      kind: 'preview',
+      message: parts.length > 0
+        ? `Document summary — ${label}${parts.join(', ')}. Now extracting each individual unit`
+        : 'The document states no summary totals of its own — proceeding straight to full unit extraction',
+      preview,
+    });
+    return preview;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    report?.('extracting', undefined, {
+      kind: 'info',
+      message: `Quick summary scan failed (${msg.slice(0, 100)}) — proceeding to full extraction`,
+    });
+    return null;
+  }
 }
 
 export interface VerificationOutcome {
@@ -338,7 +430,9 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
 export type ProgressReporter = (
   stage: string,
   detail?: string,
-  event?: Pick<ProgressEvent, 'kind' | 'message'>
+  // `preview` rides along on kind:'preview' events so the job runner can write
+  // the stated stats to the record early (shown in the UI while extracting).
+  event?: Pick<ProgressEvent, 'kind' | 'message'> & { preview?: PreviewData }
 ) => void;
 
 export async function runExtractionLadder(

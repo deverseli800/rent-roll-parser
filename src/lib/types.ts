@@ -58,6 +58,7 @@ export interface ProgressEvent {
   kind:
     | 'info'        // pipeline step (reading, triage, merging)
     | 'fastpath'    // deterministic no-AI extraction outcome
+    | 'preview'     // quick read of the document's stated summary (before unit extraction)
     | 'attempt'     // an AI extraction attempt started (model + tier)
     | 'verify_pass' // self-verification of an attempt passed
     | 'verify_fail' // self-verification found issues

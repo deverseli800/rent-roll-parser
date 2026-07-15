@@ -25,6 +25,12 @@ npx tsx ./scripts/parse-rent-roll.ts <path-to-file> [--out <path>]
   "N units extracted so far" heartbeats — if those are advancing, it is not
   stuck. The model ladder (Sonnet 5 → Opus 4.8 → Fable 5) may legitimately
   restart extraction on a bigger model when self-verification fails.
+- **Early summary — relay it immediately.** Within ~20 seconds, stderr prints a
+  line starting with "Document summary —" giving the totals the document states
+  about itself (unit count, occupancy, monthly rent). On documents that will
+  take minutes, tell the user those stated totals as soon as the line appears
+  instead of staying silent until the full extraction finishes — note they are
+  the document's own claims, which the per-unit extraction then verifies.
 - Full structured output is written to `<file>.extraction.json` next to the
   input (or `--out <path>`); a markdown summary prints to stdout. Use `--json`
   to dump the full JSON to stdout instead.

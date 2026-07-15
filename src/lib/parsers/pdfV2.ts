@@ -3,6 +3,7 @@ import type { MVPUnit, StatedSummaryStats } from '../types';
 import { sumUsage, type AIUsage } from './aiClient';
 import {
   EXTRACTION_RULES,
+  extractStatedPreview,
   runExtractionLadder,
   toMVPUnits,
   toStatedSummaryStats,
@@ -43,14 +44,24 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
     message: `Sending the PDF (${Math.round(buffer.length / 1024)}KB) to vision extraction — works on scans as well as digital PDFs`,
   });
 
-  const content = (feedback?: string): Anthropic.ContentBlockParam[] => [
+  // The PDF block leads and is cache-marked: the stated-summary preview call
+  // writes the document into the prompt cache, and the full extraction (and
+  // any same-model retries with feedback) read it at ~0.1x input price.
+  const docBlocks: Anthropic.ContentBlockParam[] = [
     {
       type: 'document',
       source: { type: 'base64', media_type: 'application/pdf', data: base64PDF },
+      cache_control: { type: 'ephemeral' },
     },
+  ];
+  const content = (feedback?: string): Anthropic.ContentBlockParam[] => [
+    ...docBlocks,
     { type: 'text', text: feedback ? `${PDF_PROMPT}\n\n${feedback}` : PDF_PROMPT },
   ];
 
+  // Phase 1: quick stated-summary read so the UI shows the document's own
+  // totals within seconds. Phase 2: the full unit-level extraction ladder.
+  await extractStatedPreview(docBlocks, usages, report, 'the PDF');
   const r = await runExtractionLadder(content, usages, report, 'PDF');
   const usage = sumUsage(usages);
   return {

@@ -126,7 +126,7 @@ async function main() {
     `- **Model:** ${result.modelUsed}  |  **Tokens:** ${fmt(result.inputTokens)} in / ${fmt(result.outputTokens)} out  |  **Time:** ${Math.round((Date.now() - startTime) / 1000)}s`,
   ];
   for (const check of failedChecks) {
-    lines.push('', `## Failed check: ${check.name}`, check.details);
+    lines.push('', `## Failed check: ${check.name}`, check.details ?? '');
     const explanation = explanationSummary?.explanations?.find(e => e.checkId === check.id);
     if (explanation) {
       lines.push('', `**Explanation (${explanation.rootCause}):** ${explanation.explanation}`);
