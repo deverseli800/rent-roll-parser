@@ -5,6 +5,7 @@ import type {
   VerificationCheck,
   VerificationSummary,
 } from '../types';
+import { reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '../utils/occupancy';
 
 /**
  * Run all verification checks and return a summary
@@ -182,27 +183,20 @@ function checkTotalRent(
     };
   }
 
-  const stated = statedStats.totalMonthlyRent;
-  const calculated = calculatedStats.totalMonthlyRent;
-  const diff = Math.abs(stated - calculated);
-  const tolerance = stated * 0.01; // 1% tolerance
-
-  if (diff <= tolerance || diff <= 1) {
-    return {
-      id: 'total-rent',
-      name: 'Total Rent',
-      description: 'Calculated total matches stated total',
-      status: 'passed',
-      details: `$${calculated.toLocaleString()} matches stated $${stated.toLocaleString()}`,
-    };
-  }
+  // Reconcile rather than compare raw: stated totals often include rent
+  // booked to model/down units that tenant-rent deliberately excludes.
+  const reconciliation = reconcileTotalRent(
+    statedStats.totalMonthlyRent,
+    calculatedStats.totalMonthlyRent,
+    calculatedStats.nonTenantRent
+  );
 
   return {
     id: 'total-rent',
     name: 'Total Rent',
-    description: 'Calculated total matches stated total',
-    status: 'failed',
-    details: `Calculated $${calculated.toLocaleString()} vs stated $${stated.toLocaleString()} (diff: $${diff.toFixed(2)})`,
+    description: 'Calculated tenant rent reconciles with stated total',
+    status: reconciliation.ok ? 'passed' : 'failed',
+    details: reconciliation.explanation,
   };
 }
 
@@ -221,24 +215,23 @@ function checkOccupiedCount(
   }
 
   const stated = statedStats.occupiedUnits;
-  const calculated = calculatedStats?.occupiedUnits ?? 0;
-
-  if (stated === calculated) {
-    return {
-      id: 'occupied-count',
-      name: 'Occupied Count',
-      description: 'Calculated occupied matches stated count',
-      status: 'passed',
-      details: `${calculated} occupied units matches stated count`,
-    };
-  }
+  // Documents count notice units (tenant still in place) as occupied, and may
+  // roll model/down units in too — reconcile rather than compare occupied-only.
+  const reconciliation = reconcileOccupiedCount(stated, {
+    occupied: calculatedStats?.occupiedUnits ?? 0,
+    vacant: calculatedStats?.vacantUnits ?? 0,
+    notice: calculatedStats?.noticeUnits ?? 0,
+    model: calculatedStats?.modelUnits ?? 0,
+    down: calculatedStats?.downUnits ?? 0,
+    applicant: calculatedStats?.applicantUnits ?? 0,
+  });
 
   return {
     id: 'occupied-count',
     name: 'Occupied Count',
-    description: 'Calculated occupied matches stated count',
-    status: 'failed',
-    details: `Calculated ${calculated} vs stated ${stated}`,
+    description: 'Calculated occupied (incl. notice) matches stated count',
+    status: reconciliation.ok ? 'passed' : 'failed',
+    details: reconciliation.explanation,
   };
 }
 
@@ -257,24 +250,24 @@ function checkVacantCount(
   }
 
   const stated = statedStats.vacantUnits;
-  const calculated = calculatedStats?.vacantUnits ?? 0;
-
-  if (stated === calculated) {
-    return {
-      id: 'vacant-count',
-      name: 'Vacant Count',
-      description: 'Calculated vacant matches stated count',
-      status: 'passed',
-      details: `${calculated} vacant units matches stated count`,
-    };
-  }
+  // Documents count applicant units (physically empty, lease not started) as
+  // vacant, and may roll model/down units in too — reconcile rather than
+  // compare vacant-only, mirroring the occupied-count check.
+  const reconciliation = reconcileVacantCount(stated, {
+    occupied: calculatedStats?.occupiedUnits ?? 0,
+    vacant: calculatedStats?.vacantUnits ?? 0,
+    notice: calculatedStats?.noticeUnits ?? 0,
+    model: calculatedStats?.modelUnits ?? 0,
+    down: calculatedStats?.downUnits ?? 0,
+    applicant: calculatedStats?.applicantUnits ?? 0,
+  });
 
   return {
     id: 'vacant-count',
     name: 'Vacant Count',
-    description: 'Calculated vacant matches stated count',
-    status: 'failed',
-    details: `Calculated ${calculated} vs stated ${stated}`,
+    description: 'Calculated vacant reconciles with stated count',
+    status: reconciliation.ok ? 'passed' : 'failed',
+    details: reconciliation.explanation,
   };
 }
 

@@ -2,11 +2,12 @@
 
 import { useState } from 'react';
 import { Dropzone, MIME_TYPES } from '@mantine/dropzone';
-import { Group, Text, rem, Stack, Progress } from '@mantine/core';
+import { Text, rem, Stack, Progress } from '@mantine/core';
 import { IconUpload, IconX, IconFile } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { saveExtraction } from '@/lib/clientStorage';
 import type { RentRollExtraction } from '@/lib/types';
+import classes from './FileUpload.module.css';
 
 interface FileUploadProps {
   onUploadComplete: (id: string) => void;
@@ -71,27 +72,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
         ]}
         loading={uploading}
         multiple={false}
-        styles={{
-          root: {
-            borderWidth: 2,
-            borderStyle: 'dashed',
-            borderRadius: 12,
-            backgroundColor: 'var(--mantine-color-gray-0)',
-            transition: 'all 0.2s ease',
-            '&:hover': {
-              borderColor: 'var(--mantine-color-brand-5)',
-              backgroundColor: 'var(--mantine-color-brand-0)',
-            },
-            '&[data-accept]': {
-              borderColor: 'var(--mantine-color-brand-5)',
-              backgroundColor: 'var(--mantine-color-brand-0)',
-            },
-            '&[data-reject]': {
-              borderColor: 'var(--mantine-color-red-5)',
-              backgroundColor: 'var(--mantine-color-red-0)',
-            },
-          },
-        }}
+        classNames={{ root: classes.root }}
       >
         <Stack align="center" justify="center" gap="md" mih={180} style={{ pointerEvents: 'none' }}>
           <Dropzone.Accept>

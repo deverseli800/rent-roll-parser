@@ -2,6 +2,21 @@ import type { MVPUnit, SummaryStats } from '../types';
 import { aggregateCharges } from './chargeNormalization';
 
 /**
+ * Rent booked against non-tenant units (model/down/vacant/applicant) —
+ * usually accounting entries (e.g. market rent charged to the model
+ * apartment). Excluded from totalMonthlyRent, but documents' stated totals
+ * often include it, so stated-vs-calculated reconciliation needs the number.
+ * Exported so the UI can compute it live from units even when a cached
+ * record's summaryStats predates the nonTenantRent field.
+ */
+export function nonTenantRentFromUnits(units: MVPUnit[]): number | null {
+  const sum = units
+    .filter(u => u.status !== 'occupied' && u.status !== 'notice' && u.monthlyRent !== null && u.monthlyRent > 0)
+    .reduce((total, u) => total + (u.monthlyRent || 0), 0);
+  return sum > 0 ? sum : null;
+}
+
+/**
  * Calculate summary statistics from extracted units
  */
 export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
@@ -35,6 +50,8 @@ export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
   const totalMonthlyRent = rentPayingUnits.length > 0
     ? rentPayingUnits.reduce((sum, u) => sum + (u.monthlyRent || 0), 0)
     : null;
+
+  const nonTenantRent = nonTenantRentFromUnits(units);
 
   // Average rent (only for rent-paying units)
   const averageRent = rentPayingUnits.length > 0 && totalMonthlyRent !== null
@@ -85,6 +102,7 @@ export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
     physicalOccupancy,
     totalSqft,
     totalMonthlyRent,
+    nonTenantRent,
     averageRent,
     averageSqft,
     averageRentPerSqft,

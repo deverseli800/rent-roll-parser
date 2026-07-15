@@ -51,11 +51,27 @@ export interface MVPUnit {
   sourcePage?: number;
 }
 
+// A notable moment in the extraction pipeline, shown live in the progress
+// timeline and persisted to the record as the extraction log.
+export interface ProgressEvent {
+  at: string; // ISO timestamp
+  kind:
+    | 'info'        // pipeline step (reading, triage, merging)
+    | 'fastpath'    // deterministic no-AI extraction outcome
+    | 'attempt'     // an AI extraction attempt started (model + tier)
+    | 'verify_pass' // self-verification of an attempt passed
+    | 'verify_fail' // self-verification found issues
+    | 'escalation'  // moving up the model ladder, with why
+    | 'decision';   // which attempt was kept / second-opinion outcome
+  message: string;
+}
+
 // Live progress for an extraction being processed in the background
 export interface ExtractionProgress {
   stage: string;            // e.g. "extracting", "verifying", "validating"
   detail: string | null;    // e.g. 'sheet "Report1" — attempt 2 (claude-opus-4-8), 41KB streamed'
   updatedAt: string;        // ISO timestamp of last heartbeat
+  events?: ProgressEvent[]; // append-only timeline of notable moments
 }
 
 export interface ValidationIssue {
@@ -87,6 +103,11 @@ export interface SummaryStats {
   physicalOccupancy: number | null;  // Percentage (0-100)
   totalSqft: number | null;
   totalMonthlyRent: number | null;
+  // Rent charged against non-tenant units (model/down/vacant/applicant) —
+  // often bookkeeping entries a document's stated total includes but
+  // totalMonthlyRent (occupied+notice only) deliberately excludes.
+  // Optional: records processed before this field exist without it.
+  nonTenantRent?: number | null;
   averageRent: number | null;
   averageSqft: number | null;
   averageRentPerSqft: number | null;
@@ -192,6 +213,10 @@ export interface RentRollExtraction {
 
   // Live progress while status === 'processing' (server-side jobs only)
   progress?: ExtractionProgress | null;
+
+  // Persisted timeline of how the extraction ran (models tried, escalations,
+  // verification outcomes) — kept after completion for the review page.
+  extractionLog?: ProgressEvent[] | null;
 }
 
 export interface ExtractionSummary {

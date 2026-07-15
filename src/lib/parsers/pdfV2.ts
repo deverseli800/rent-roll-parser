@@ -38,6 +38,10 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
 }> {
   const usages: AIUsage[] = [];
   const base64PDF = buffer.toString('base64');
+  report?.('reading', 'preparing PDF', {
+    kind: 'info',
+    message: `Sending the PDF (${Math.round(buffer.length / 1024)}KB) to vision extraction — works on scans as well as digital PDFs`,
+  });
 
   const content = (feedback?: string): Anthropic.ContentBlockParam[] => [
     {

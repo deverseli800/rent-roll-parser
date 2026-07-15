@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { MVPUnit, UnitStatus, StatedSummaryStats } from '../types';
-import { extractStructured, MODELS, type AIUsage } from './aiClient';
+import type { MVPUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
+import { extractStructured, MODELS, modelLabel, type AIUsage } from './aiClient';
+import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount } from '../utils/occupancy';
 
 /**
  * Shared extraction schema, prompt, normalization, and self-verification
@@ -205,7 +206,8 @@ export function toStatedSummaryStats(r: ExtractionResult): StatedSummaryStats | 
     totalUnits: r.statedTotalUnits ?? null,
     totalMonthlyRent: s?.totalMonthlyRent ?? null,
     totalSqft: s?.totalSqft ?? null,
-    occupancyRate: s?.occupancyRate ?? null,
+    // Excel percent cells extract as fractions (92.31% -> 0.9231) — store 0-100.
+    occupancyRate: normalizeOccupancyRatePct(s?.occupancyRate ?? null),
     occupiedUnits: s?.occupiedUnits ?? null,
     vacantUnits: s?.vacantUnits ?? null,
   };
@@ -300,9 +302,13 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
   const statedOcc = r.statedSummary?.occupiedUnits ?? null;
   if (statedOcc !== null) {
     hasStatedAnchors = true;
-    const occ = r.units.filter(u => u.status === 'occupied' || u.status === 'notice').length;
-    if (Math.abs(occ - statedOcc) > Math.max(1, statedOcc * 0.05)) {
-      issues.push(`Document states ${statedOcc} occupied units but ${occ} were extracted as occupied/notice`);
+    const reconciliation = reconcileOccupiedCount(statedOcc, countByStatus(r.units));
+    // Escalation policy: retry on a bigger model only for gross mismatches
+    // (>5%) that reconciliation can't explain — escalating over definitional
+    // slack (notice/model/down counted as occupied) would burn tokens to
+    // re-extract an already-correct result.
+    if (!reconciliation.ok && reconciliation.diff > Math.max(1, statedOcc * 0.05)) {
+      issues.push(`Document states ${statedOcc} occupied units but ${reconciliation.physical} were extracted as occupied/notice`);
     }
   }
 
@@ -323,8 +329,17 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
  *      (nothing to check against): run Opus 4.8 as an independent second
  *      opinion; keep the fast result only when both agree on the unit set.
  */
-/** Reports parser progress: reporter(stage, detail) */
-export type ProgressReporter = (stage: string, detail?: string) => void;
+/**
+ * Reports parser progress: reporter(stage, detail, event?).
+ * `stage`/`detail` drive the throttled "current activity" line; `event`, when
+ * present, appends a notable moment to the user-visible timeline (attempt
+ * started, verification outcome, escalation) and is never throttled away.
+ */
+export type ProgressReporter = (
+  stage: string,
+  detail?: string,
+  event?: Pick<ProgressEvent, 'kind' | 'message'>
+) => void;
 
 export async function runExtractionLadder(
   makeContent: (feedback?: string) => Anthropic.ContentBlockParam[],
@@ -334,25 +349,61 @@ export async function runExtractionLadder(
 ): Promise<ExtractionResult> {
   let lastError: Error | null = null;
   let attemptNo = 0;
+  const where = subject ? ` on ${subject}` : '';
+  // Summarize verification issues for the user-visible timeline.
+  const issueSummary = (issues: string[]) => {
+    const shown = issues.slice(0, 2).map(i => i.split(' — ')[0]); // drop prompt-side hints
+    return `${shown.join('; ')}${issues.length > 2 ? ` (+${issues.length - 2} more)` : ''}`;
+  };
+
   const attempt = async (model: string, feedback?: string) => {
     attemptNo++;
-    const label = `${subject ? subject + ' — ' : ''}attempt ${attemptNo} (${model})`;
-    report?.('extracting', label);
+    const label = `${subject ? subject + ' — ' : ''}attempt ${attemptNo} (${modelLabel(model)})`;
+    report?.('extracting', label, {
+      kind: 'attempt',
+      message: `${modelLabel(model)} extracting${where} (attempt ${attemptNo})`,
+    });
     try {
       const { data, usage } = await extractStructured<ExtractionResult>({
         model,
         content: makeContent(feedback),
         schema: EXTRACTION_SCHEMA,
+        itemToken: '"unitNumber"',
         onHeartbeat: report
-          ? chars => report('extracting', `${label}, ~${Math.round(chars / 1024)}KB streamed`)
+          ? ({ chars, items }) => {
+              const detail = items > 0
+                ? `${label} — ${items} unit${items === 1 ? '' : 's'} extracted so far`
+                : chars > 0
+                  ? `${label} — writing document summary (~${Math.round(chars / 1024)}KB streamed)`
+                  : `${label} — reading and analyzing the document (no output yet; large documents take several minutes)`;
+              report('extracting', detail);
+            }
           : undefined,
       });
       usages.push(usage);
-      return { result: data, verification: verifyAgainstStated(data) };
+      const verification = verifyAgainstStated(data);
+      if (verification.ok) {
+        report?.('verifying', label, {
+          kind: 'verify_pass',
+          message: verification.hasStatedAnchors
+            ? `${modelLabel(model)} extracted ${data.units.length} units — verified against the document's stated totals`
+            : `${modelLabel(model)} extracted ${data.units.length} units — document states no totals to verify against`,
+        });
+      } else {
+        report?.('verifying', label, {
+          kind: 'verify_fail',
+          message: `${modelLabel(model)}'s result failed self-verification: ${issueSummary(verification.issues)}`,
+        });
+      }
+      return { result: data, verification };
     } catch (e) {
       // A failed attempt (max_tokens, refusal, transient API error) should not
       // kill the whole parse — record it and let the ladder escalate.
       lastError = e instanceof Error ? e : new Error(String(e));
+      report?.('verifying', label, {
+        kind: 'verify_fail',
+        message: `${modelLabel(model)} attempt failed (${lastError.message.slice(0, 120)})`,
+      });
       const empty: ExtractionResult = {
         propertyName: null,
         statedTotalUnits: null,
@@ -377,21 +428,55 @@ export async function runExtractionLadder(
 
   if (!best.verification.ok) {
     const feedback = best.verification.issues.map(i => `- ${i}`).join('\n');
+    report?.('escalating', undefined, {
+      kind: 'escalation',
+      message: `Escalating to ${modelLabel(MODELS.strong)} with feedback about what went wrong`,
+    });
     const retry = await attempt(MODELS.strong, `IMPORTANT — a previous extraction attempt had these problems; fix them:\n${feedback}`);
     best = pickBetterAttempt(best, retry);
+    report?.('extracting', undefined, {
+      kind: 'decision',
+      message: best === retry
+        ? `Keeping ${modelLabel(MODELS.strong)}'s result${best.verification.ok ? '' : ' (better of the two, but still imperfect)'}`
+        : `${modelLabel(MODELS.strong)} did not improve on ${modelLabel(MODELS.fast)} — keeping the earlier result`,
+    });
     if (!best.verification.ok && best.verification.hasStatedAnchors) {
       const fb2 = best.verification.issues.map(i => `- ${i}`).join('\n');
+      report?.('escalating', undefined, {
+        kind: 'escalation',
+        message: `Still failing verification — escalating to ${modelLabel(MODELS.max)} (most capable model)`,
+      });
       const retry2 = await attempt(MODELS.max, `IMPORTANT — a previous extraction attempt had these problems; fix them:\n${fb2}`);
+      const prev = best;
       best = pickBetterAttempt(best, retry2);
+      report?.('extracting', undefined, {
+        kind: 'decision',
+        message: best === retry2
+          ? `Keeping ${modelLabel(MODELS.max)}'s result${best.verification.ok ? '' : ' (best available, some checks still unresolved)'}`
+          : `${modelLabel(MODELS.max)} did not improve — keeping the earlier result${prev.verification.ok ? '' : ' (some checks still unresolved)'}`,
+      });
     }
   } else if (!best.verification.hasStatedAnchors) {
     // Nothing in the document to verify against — get a second opinion.
+    report?.('verifying', undefined, {
+      kind: 'info',
+      message: `No stated totals to verify against — asking ${modelLabel(MODELS.strong)} for an independent second opinion`,
+    });
     const second = await attempt(MODELS.strong);
     const setA = unitNumberMultiset(best.result.units);
     const setB = unitNumberMultiset(second.result.units);
     if (setA !== setB) {
       // Disagreement with no anchors: trust the stronger model.
       best = second.verification.issues.length <= best.verification.issues.length ? second : best;
+      report?.('extracting', undefined, {
+        kind: 'decision',
+        message: `The two models disagreed on the unit list — keeping ${modelLabel(best === second ? MODELS.strong : MODELS.fast)}'s version`,
+      });
+    } else {
+      report?.('extracting', undefined, {
+        kind: 'decision',
+        message: 'Both models independently extracted the same unit list — high agreement',
+      });
     }
   }
 

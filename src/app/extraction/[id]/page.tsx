@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Container,
@@ -24,6 +24,8 @@ import {
   UnstyledButton,
   Switch,
   Tooltip,
+  Timeline,
+  ThemeIcon,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -42,14 +44,22 @@ import {
   IconBulb,
   IconSparkles,
   IconKeyboard,
+  IconBolt,
+  IconCpu,
+  IconStairsUp,
+  IconArrowsSplit,
+  IconInfoCircle,
+  IconListDetails,
 } from '@tabler/icons-react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent, GridApi } from 'ag-grid-community';
-import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary } from '@/lib/types';
+import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary, ProgressEvent } from '@/lib/types';
 import { getExtraction, saveExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
 import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
-import { calculateSummaryStats } from '@/lib/utils/summaryStats';
+import { calculateSummaryStats, nonTenantRentFromUnits } from '@/lib/utils/summaryStats';
+import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '@/lib/utils/occupancy';
+import { modelLabel } from '@/lib/utils/modelLabels';
 import * as XLSX from 'xlsx';
 
 // Register AG Grid modules
@@ -337,10 +347,7 @@ function ValidationIssuesCard({ issues }: { issues: ValidationIssue[] }) {
 
 function formatModelName(model: string | null): string {
   if (!model) return '—';
-  if (model.includes('opus')) return 'Opus 4.5';
-  if (model.includes('sonnet-4-5')) return 'Sonnet 4.5';
-  if (model.includes('sonnet')) return 'Sonnet 4';
-  return model;
+  return modelLabel(model);
 }
 
 function formatTokens(tokens: number | null): string {
@@ -393,18 +400,281 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
   );
 }
 
+const EVENT_STYLE: Record<ProgressEvent['kind'], { color: string; icon: ReactNode }> = {
+  info:        { color: 'gray',   icon: <IconInfoCircle size={13} /> },
+  fastpath:    { color: 'blue',   icon: <IconBolt size={13} /> },
+  attempt:     { color: 'blue',   icon: <IconCpu size={13} /> },
+  verify_pass: { color: 'green',  icon: <IconCircleCheck size={13} /> },
+  verify_fail: { color: 'red',    icon: <IconAlertTriangle size={13} /> },
+  escalation:  { color: 'orange', icon: <IconStairsUp size={13} /> },
+  decision:    { color: 'violet', icon: <IconArrowsSplit size={13} /> },
+};
+
+/**
+ * Timeline of extraction pipeline events. Live view renders newest-first
+ * (console style — the latest event is always visible without scrolling);
+ * the post-completion log reads chronologically.
+ */
+function ExtractionTimeline({ events, newestFirst = false }: { events: ProgressEvent[]; newestFirst?: boolean }) {
+  if (events.length === 0) return null;
+
+  const ordered = newestFirst ? [...events].reverse() : events;
+  const fmtTime = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+  return (
+    <Timeline active={ordered.length - 1} bulletSize={22} lineWidth={2}>
+      {ordered.map((event, i) => {
+        const style = EVENT_STYLE[event.kind] ?? EVENT_STYLE.info;
+        const isEscalation = event.kind === 'escalation';
+        return (
+          <Timeline.Item
+            key={`${event.at}-${i}`}
+            bullet={
+              <ThemeIcon size={22} radius="xl" color={style.color} variant={isEscalation ? 'filled' : 'light'}>
+                {style.icon}
+              </ThemeIcon>
+            }
+          >
+            <Group gap="sm" align="baseline" wrap="nowrap">
+              <Text size="xs" c="dimmed" ff="monospace" style={{ whiteSpace: 'nowrap' }}>{fmtTime(event.at)}</Text>
+              <Text size="sm" fw={isEscalation ? 600 : undefined} c={isEscalation ? 'orange.8' : undefined}>
+                {event.message}
+              </Text>
+            </Group>
+          </Timeline.Item>
+        );
+      })}
+    </Timeline>
+  );
+}
+
+// The pipeline's real phases — the stage rail encodes actual structure,
+// mapping the reporter's fine-grained stages onto four user-facing steps.
+const PHASES = ['Read', 'Analyze', 'Extract', 'Verify'] as const;
+
+function phaseIndex(stage: string): number {
+  switch (stage) {
+    case 'queued':
+    case 'reading': return 0;
+    case 'triaging':
+    case 'mapping': return 1;
+    case 'extracting':
+    case 'verifying':
+    case 'escalating':
+    case 'merging': return 2;
+    case 'validating':
+    case 'explaining': return 3;
+    default: return 2;
+  }
+}
+
+const STAGE_TITLES: Record<string, string> = {
+  queued: 'Queued',
+  reading: 'Reading workbook',
+  triaging: 'Choosing sheets',
+  mapping: 'Analyzing structure',
+  extracting: 'Extracting units',
+  verifying: 'Verifying results',
+  escalating: 'Escalating model',
+  merging: 'Merging sheets',
+  validating: 'Running checks',
+  explaining: 'Explaining findings',
+};
+
+/** Horizontal Read → Analyze → Extract → Verify rail with the current phase lit. */
+function StageRail({ stage }: { stage: string }) {
+  const current = phaseIndex(stage);
+  return (
+    <Group gap={0} wrap="nowrap" style={{ width: '100%' }}>
+      {PHASES.map((label, i) => (
+        <Group key={label} gap={6} wrap="nowrap" style={{ flex: i < PHASES.length - 1 ? 1 : undefined }}>
+          <div
+            style={{
+              width: 10, height: 10, borderRadius: 5, flexShrink: 0,
+              background: i < current
+                ? 'var(--mantine-color-teal-6)'
+                : i === current
+                  ? 'var(--mantine-color-teal-6)'
+                  : 'var(--mantine-color-gray-3)',
+              boxShadow: i === current ? '0 0 0 4px var(--mantine-color-teal-1)' : undefined,
+            }}
+          />
+          <Text
+            size="xs"
+            fw={i === current ? 700 : 500}
+            c={i < current ? 'teal.7' : i === current ? 'teal.8' : 'dimmed'}
+            style={{ whiteSpace: 'nowrap' }}
+          >
+            {label}
+          </Text>
+          {i < PHASES.length - 1 && (
+            <div
+              style={{
+                flex: 1, height: 2, margin: '0 10px', borderRadius: 1,
+                background: i < current ? 'var(--mantine-color-teal-4)' : 'var(--mantine-color-gray-3)',
+              }}
+            />
+          )}
+        </Group>
+      ))}
+    </Group>
+  );
+}
+
+/**
+ * Live extraction console: compact status header (pulsing dot, phase, ticking
+ * elapsed), pipeline stage rail, then the newest-first event feed as the
+ * dominant element — the latest event is always visible without scrolling.
+ */
+function ProcessingView({ extraction, onBack }: { extraction: RentRollExtraction; onBack: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const stage = extraction.progress?.stage ?? 'queued';
+  const isEscalating = stage === 'escalating';
+  const accent = isEscalating ? 'orange' : 'teal';
+  const events = extraction.progress?.events ?? [];
+
+  const elapsedMs = Math.max(0, now - new Date(extraction.uploadedAt).getTime());
+  const elapsedMin = Math.floor(elapsedMs / 60000);
+  const elapsedSec = Math.floor((elapsedMs % 60000) / 1000);
+
+  return (
+    <Container size="md" py="xl">
+      <style>{`
+        .rrp-pulse { animation: rrp-pulse 1.6s ease-in-out infinite; }
+        @keyframes rrp-pulse {
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--mantine-color-${accent}-3); }
+          50% { opacity: 0.7; box-shadow: 0 0 0 6px transparent; }
+        }
+        @media (prefers-reduced-motion: reduce) { .rrp-pulse { animation: none; } }
+      `}</style>
+      <Stack gap="lg">
+        <Group>
+          <ActionIcon variant="subtle" onClick={onBack}>
+            <IconArrowLeft size={20} />
+          </ActionIcon>
+          <div>
+            <Title order={2}>{extraction.fileName}</Title>
+            <Text c="dimmed" size="sm">Extraction in progress — you can leave; processing continues on the server</Text>
+          </div>
+        </Group>
+
+        <Paper withBorder radius="lg" style={{ overflow: 'hidden' }}>
+          {/* Live status header */}
+          <div style={{ padding: '20px 24px', background: `var(--mantine-color-${accent}-0)` }}>
+            <Group justify="space-between" align="flex-start" wrap="nowrap">
+              <Group gap="sm" wrap="nowrap">
+                <span
+                  className="rrp-pulse"
+                  style={{
+                    width: 12, height: 12, borderRadius: 6, marginTop: 6, flexShrink: 0,
+                    background: `var(--mantine-color-${accent}-6)`,
+                  }}
+                />
+                <div>
+                  <Text fw={700} size="lg" c={`${accent}.9`}>
+                    {STAGE_TITLES[stage] ?? stage.charAt(0).toUpperCase() + stage.slice(1)}
+                  </Text>
+                  {extraction.progress?.detail && (
+                    <Text size="sm" c="dimmed">{extraction.progress.detail}</Text>
+                  )}
+                </div>
+              </Group>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <Text size="lg" fw={700} ff="monospace" c={`${accent}.9`}>
+                  {elapsedMin > 0 ? `${elapsedMin}m ${String(elapsedSec).padStart(2, '0')}s` : `${elapsedSec}s`}
+                </Text>
+                <Text size="xs" c="dimmed">large docs: 5–25 min</Text>
+              </div>
+            </Group>
+            <div style={{ marginTop: 18 }}>
+              <StageRail stage={stage} />
+            </div>
+          </div>
+
+          {/* Newest-first live feed — the main content */}
+          <div style={{ padding: '20px 24px' }}>
+            {events.length > 0 ? (
+              <ExtractionTimeline events={events} newestFirst />
+            ) : (
+              <Group gap="sm">
+                <Loader size="xs" />
+                <Text size="sm" c="dimmed">Starting up…</Text>
+              </Group>
+            )}
+          </div>
+        </Paper>
+      </Stack>
+    </Container>
+  );
+}
+
+/** Collapsible post-completion card: how the extraction ran (models, escalations). */
+function ExtractionLogCard({ log, modelUsed }: { log: ProgressEvent[] | null | undefined; modelUsed: string | null }) {
+  const [opened, setOpened] = useState(false);
+  if (!log || log.length === 0) return null;
+
+  const escalated = log.some(e => e.kind === 'escalation');
+  const fastPath = log.some(e => e.kind === 'fastpath' && e.message.includes('succeeded'));
+
+  return (
+    <Card withBorder p="md">
+      <UnstyledButton onClick={() => setOpened(o => !o)} style={{ width: '100%' }}>
+        <Group justify="space-between">
+          <Group gap="xs">
+            {opened ? <IconChevronDown size={18} /> : <IconChevronRight size={18} />}
+            <IconListDetails size={20} />
+            <Title order={5}>How this was extracted</Title>
+          </Group>
+          <Group gap="xs">
+            {fastPath && (
+              <Badge color="blue" variant="light" leftSection={<IconBolt size={12} />}>
+                Deterministic fast path
+              </Badge>
+            )}
+            {escalated && (
+              <Badge color="orange" variant="light" leftSection={<IconStairsUp size={12} />}>
+                Escalated
+              </Badge>
+            )}
+            {modelUsed && (
+              <Badge color="gray" variant="light">{modelLabel(modelUsed)}</Badge>
+            )}
+          </Group>
+        </Group>
+      </UnstyledButton>
+      <Collapse in={opened}>
+        <div style={{ marginTop: 16 }}>
+          <ExtractionTimeline events={log} />
+        </div>
+      </Collapse>
+    </Card>
+  );
+}
+
 function ComparisonValue({
   label,
   stated,
   calculated,
   format = 'number',
-  tolerancePercent = 1
+  tolerancePercent = 1,
+  matchOverride,
+  note
 }: {
   label: string;
   stated: number | null;
   calculated: number | null;
   format?: 'number' | 'currency' | 'percent';
   tolerancePercent?: number;
+  /** Overrides the tolerance check (e.g. occupied-count reconciliation) */
+  matchOverride?: boolean;
+  /** Explains why stated and calculated legitimately differ */
+  note?: string;
 }) {
   const formatValue = (value: number | null) => {
     if (value === null) return '—';
@@ -427,7 +697,9 @@ function ComparisonValue({
 
   // Check if values match within tolerance
   let isMatch = true;
-  if (hasStated && hasCalculated) {
+  if (matchOverride !== undefined) {
+    isMatch = matchOverride;
+  } else if (hasStated && hasCalculated) {
     const diff = Math.abs(stated - calculated);
     const tolerance = stated * (tolerancePercent / 100);
     isMatch = diff <= tolerance || diff < 1; // Also ignore differences under 1
@@ -437,26 +709,33 @@ function ComparisonValue({
     <div>
       <Text size="sm" c="dimmed">{label}</Text>
       {hasStated ? (
-        <Group gap="xs" align="baseline">
-          <div>
-            <Text size="xs" c="dimmed" mb={2}>Stated</Text>
-            <Text size="lg" fw={600}>{formatValue(stated)}</Text>
-          </div>
-          <Text size="lg" c="dimmed">/</Text>
-          <div>
-            <Text size="xs" c="dimmed" mb={2}>Calculated</Text>
-            <Text size="lg" fw={600} c={isMatch ? undefined : 'orange'}>
-              {formatValue(calculated)}
-              {!isMatch && hasCalculated && (
-                <IconAlertTriangle
-                  size={14}
-                  style={{ marginLeft: 4, verticalAlign: 'middle' }}
-                  color="var(--mantine-color-orange-6)"
-                />
-              )}
+        <>
+          <Group gap="xs" align="baseline">
+            <div>
+              <Text size="xs" c="dimmed" mb={2}>Stated</Text>
+              <Text size="lg" fw={600}>{formatValue(stated)}</Text>
+            </div>
+            <Text size="lg" c="dimmed">/</Text>
+            <div>
+              <Text size="xs" c="dimmed" mb={2}>Calculated</Text>
+              <Text size="lg" fw={600} c={isMatch ? undefined : 'orange'}>
+                {formatValue(calculated)}
+                {!isMatch && hasCalculated && (
+                  <IconAlertTriangle
+                    size={14}
+                    style={{ marginLeft: 4, verticalAlign: 'middle' }}
+                    color="var(--mantine-color-orange-6)"
+                  />
+                )}
+              </Text>
+            </div>
+          </Group>
+          {note && (
+            <Text size="xs" c={isMatch ? 'teal.7' : 'orange.7'} mt={4} style={{ lineHeight: 1.35 }}>
+              {note}
             </Text>
-          </div>
-        </Group>
+          )}
+        </>
       ) : (
         <Text size="lg" fw={600}>{formatValue(calculated)}</Text>
       )}
@@ -466,10 +745,12 @@ function ComparisonValue({
 
 function SummaryStatsCard({
   stats,
-  statedStats
+  statedStats,
+  units
 }: {
   stats: SummaryStats | null;
   statedStats?: StatedSummaryStats | null;
+  units?: MVPUnit[];
 }) {
   if (!stats) {
     return null;
@@ -503,6 +784,32 @@ function SummaryStatsCard({
     statedStats.vacantUnits !== null
   );
 
+  // Explain legitimate stated-vs-calculated differences inline so a
+  // definitional gap (model-unit rent, notice counted as occupied) doesn't
+  // read as an extraction error. nonTenantRent is recomputed live from units
+  // when the (possibly cached) summaryStats predates the field.
+  const nonTenantRent = stats.nonTenantRent ?? (units ? nonTenantRentFromUnits(units) : null);
+  const rentReconciliation =
+    statedStats?.totalMonthlyRent != null && stats.totalMonthlyRent != null
+      ? reconcileTotalRent(statedStats.totalMonthlyRent, stats.totalMonthlyRent, nonTenantRent)
+      : null;
+  const statusCounts = {
+    occupied: stats.occupiedUnits,
+    vacant: stats.vacantUnits,
+    notice: stats.noticeUnits,
+    model: stats.modelUnits,
+    down: stats.downUnits,
+    applicant: stats.applicantUnits,
+  };
+  const occupiedReconciliation =
+    statedStats?.occupiedUnits != null
+      ? reconcileOccupiedCount(statedStats.occupiedUnits, statusCounts)
+      : null;
+  const vacantReconciliation =
+    statedStats?.vacantUnits != null
+      ? reconcileVacantCount(statedStats.vacantUnits, statusCounts)
+      : null;
+
   return (
     <Card withBorder p="md">
       <Group justify="space-between" mb="md">
@@ -524,6 +831,8 @@ function SummaryStatsCard({
               stated={statedStats?.totalMonthlyRent ?? null}
               calculated={stats.totalMonthlyRent}
               format="currency"
+              matchOverride={rentReconciliation?.ok}
+              note={rentReconciliation && !rentReconciliation.exact ? rentReconciliation.explanation : undefined}
             />
             <ComparisonValue
               label="Total Sqft"
@@ -532,21 +841,23 @@ function SummaryStatsCard({
             />
             <ComparisonValue
               label="Occupancy Rate"
-              stated={statedStats?.occupancyRate ?? null}
+              stated={normalizeOccupancyRatePct(statedStats?.occupancyRate ?? null)}
               calculated={stats.physicalOccupancy}
               format="percent"
             />
             <ComparisonValue
-              label="Occupied Units"
+              label="Occupied Units (incl. notice)"
               stated={statedStats?.occupiedUnits ?? null}
-              calculated={stats.occupiedUnits}
-              tolerancePercent={0}
+              calculated={stats.occupiedUnits + stats.noticeUnits}
+              matchOverride={occupiedReconciliation?.ok}
+              note={occupiedReconciliation && occupiedReconciliation.diff > 0 ? occupiedReconciliation.explanation : undefined}
             />
             <ComparisonValue
               label="Vacant Units"
               stated={statedStats?.vacantUnits ?? null}
               calculated={stats.vacantUnits}
-              tolerancePercent={0}
+              matchOverride={vacantReconciliation?.ok}
+              note={vacantReconciliation && vacantReconciliation.diff > 0 ? vacantReconciliation.explanation : undefined}
             />
           </SimpleGrid>
         </>
@@ -1320,44 +1631,7 @@ export default function ExtractionPage() {
   }
 
   if (extraction.status === 'processing') {
-    const elapsedMs = Date.now() - new Date(extraction.uploadedAt).getTime();
-    const elapsedMin = Math.floor(elapsedMs / 60000);
-    const elapsedSec = Math.floor((elapsedMs % 60000) / 1000);
-    return (
-      <Container size="md" py="xl">
-        <Stack gap="lg">
-          <Group>
-            <ActionIcon variant="subtle" onClick={() => router.push('/')}>
-              <IconArrowLeft size={20} />
-            </ActionIcon>
-            <div>
-              <Title order={2}>{extraction.fileName}</Title>
-              <Text c="dimmed" size="sm">Extraction in progress</Text>
-            </div>
-          </Group>
-          <Paper withBorder p="xl" radius="lg">
-            <Stack align="center" gap="md" py="lg">
-              <Loader size="lg" />
-              <Text fw={600} size="lg" tt="capitalize">
-                {extraction.progress?.stage ?? 'processing'}…
-              </Text>
-              {extraction.progress?.detail && (
-                <Text size="sm" c="dimmed" ta="center">
-                  {extraction.progress.detail}
-                </Text>
-              )}
-              <Text size="xs" c="dimmed">
-                Elapsed: {elapsedMin > 0 ? `${elapsedMin}m ` : ''}{elapsedSec}s
-                {' — large documents can take 5–25 minutes.'}
-              </Text>
-              <Text size="xs" c="dimmed">
-                You can leave this page; processing continues on the server.
-              </Text>
-            </Stack>
-          </Paper>
-        </Stack>
-      </Container>
-    );
+    return <ProcessingView extraction={extraction} onBack={() => router.push('/')} />;
   }
 
   return (
@@ -1466,6 +1740,9 @@ export default function ExtractionPage() {
         {/* Verification Checks */}
         <VerificationChecksCard summary={extraction.verificationSummary} />
 
+        {/* How the extraction ran: models tried, escalations, verification */}
+        <ExtractionLogCard log={extraction.extractionLog} modelUsed={extraction.modelUsed} />
+
         {/* Mismatch Explanations */}
         <ExplanationsCard summary={extraction.explanationSummary} />
 
@@ -1473,7 +1750,7 @@ export default function ExtractionPage() {
         <ValidationIssuesCard issues={extraction.validationIssues} />
 
         {/* Summary Statistics */}
-        <SummaryStatsCard stats={extraction.summaryStats} statedStats={extraction.statedSummaryStats} />
+        <SummaryStatsCard stats={extraction.summaryStats} statedStats={extraction.statedSummaryStats} units={units} />
 
         {/* Units Table */}
         <Paper withBorder p="md">

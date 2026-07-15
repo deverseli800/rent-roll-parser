@@ -16,14 +16,24 @@ export const MODELS = {
   max: 'claude-fable-5',
 } as const;
 
+/** Human-readable names for progress/escalation messages. */
+export { modelLabel } from '../utils/modelLabels';
+
 export interface AIUsage {
   modelUsed: string;
   inputTokens: number;
   outputTokens: number;
 }
 
-/** Called during streaming with cumulative output characters (throttled). */
-export type StreamHeartbeat = (outputChars: number) => void;
+export interface StreamProgress {
+  /** cumulative output characters streamed (0 while the model is still thinking) */
+  chars: number;
+  /** completed items seen so far, counted by occurrences of `itemToken` in the stream */
+  items: number;
+}
+
+/** Called during streaming with cumulative progress (throttled). */
+export type StreamHeartbeat = (progress: StreamProgress) => void;
 
 let _client: Anthropic | null = null;
 
@@ -46,9 +56,14 @@ export async function extractStructured<T>(options: {
   schema: Record<string, unknown>;
   maxTokens?: number;
   onHeartbeat?: StreamHeartbeat;
+  /**
+   * Substring whose occurrences in the streamed JSON count completed items
+   * for progress reporting (e.g. '"unitNumber"' — once per unit object).
+   */
+  itemToken?: string;
 }): Promise<{ data: T; usage: AIUsage }> {
   const client = getClient();
-  const { model, content, schema, maxTokens = 110000, onHeartbeat } = options;
+  const { model, content, schema, maxTokens = 110000, onHeartbeat, itemToken } = options;
 
   const params: Anthropic.MessageCreateParamsStreaming = {
     model,
@@ -71,19 +86,33 @@ export async function extractStructured<T>(options: {
 
   if (onHeartbeat) {
     let chars = 0;
+    let items = 0;
+    // Token matches can split across delta boundaries; carry the last
+    // token-length−1 chars forward. A full token never fits in the carry
+    // alone, so nothing is double-counted.
+    let carry = '';
     let lastBeat = Date.now();
     stream.on('text', (delta) => {
       chars += delta.length;
+      if (itemToken) {
+        const seg = carry + delta;
+        let idx = seg.indexOf(itemToken);
+        while (idx !== -1) {
+          items++;
+          idx = seg.indexOf(itemToken, idx + itemToken.length);
+        }
+        carry = seg.slice(-(itemToken.length - 1));
+      }
       if (Date.now() - lastBeat >= 3000) {
         lastBeat = Date.now();
-        onHeartbeat(chars);
+        onHeartbeat({ chars, items });
       }
     });
     // Thinking phases emit no text for minutes; any stream event proves liveness
     stream.on('streamEvent', () => {
       if (Date.now() - lastBeat >= 15000) {
         lastBeat = Date.now();
-        onHeartbeat(chars);
+        onHeartbeat({ chars, items });
       }
     });
   }
