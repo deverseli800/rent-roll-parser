@@ -20,6 +20,8 @@ FAILED VERIFICATION CHECKS:
 Analyze the data and explain the ROOT CAUSE of each mismatch. Common causes include:
 
 1. **Total Rent Mismatch**:
+   - Document's stated total includes rent booked to model/down/admin units, but the calculation counts only occupied/notice tenants
+   - Check if: stated_total = calculated_total + sum of monthlyRent on model/down/vacant/applicant units
    - Document uses market rent for ALL units, but calculation excludes vacant/applicant units
    - Sum the monthlyRent for excluded status types to verify
 

@@ -1,4 +1,5 @@
 import type { MVPUnit, ValidationIssue, StatedSummaryStats, SummaryStats } from '../types';
+import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '../utils/occupancy';
 
 /**
  * MVP Validation - Focused on unit count accuracy
@@ -204,20 +205,25 @@ export function checkSummaryMismatch(
     return issues;
   }
 
-  // Check total monthly rent mismatch (allow 1% tolerance for rounding)
+  // Check total monthly rent mismatch. Reconcile before flagging: stated
+  // totals often include rent booked to model/down units that the calculated
+  // tenant-rent total deliberately excludes.
   if (statedStats.totalMonthlyRent !== null && calculatedStats.totalMonthlyRent !== null && calculatedStats.totalMonthlyRent > 0) {
-    const diff = Math.abs(statedStats.totalMonthlyRent - calculatedStats.totalMonthlyRent);
-    const tolerance = statedStats.totalMonthlyRent * 0.01; // 1% tolerance
-    if (diff > tolerance && diff > 1) { // Also ignore differences under $1
+    const reconciliation = reconcileTotalRent(
+      statedStats.totalMonthlyRent,
+      calculatedStats.totalMonthlyRent,
+      calculatedStats.nonTenantRent
+    );
+    if (!reconciliation.ok) {
       issues.push({
         type: 'summary_mismatch',
         severity: 'warning',
-        message: `Total rent mismatch: Document states $${statedStats.totalMonthlyRent.toLocaleString()} but calculated $${calculatedStats.totalMonthlyRent.toLocaleString()} (diff: $${diff.toFixed(2)})`,
+        message: `Total rent mismatch: ${reconciliation.explanation}`,
         details: {
           field: 'totalMonthlyRent',
           stated: statedStats.totalMonthlyRent,
           calculated: calculatedStats.totalMonthlyRent,
-          difference: diff,
+          difference: reconciliation.diff,
         },
       });
     }
@@ -242,30 +248,51 @@ export function checkSummaryMismatch(
     }
   }
 
-  // Check occupied unit count mismatch
+  // Check occupied unit count mismatch. Documents count notice units (tenant
+  // still in place) as occupied and may roll model/down units in too, so
+  // reconcile against occupied+notice with model/down/applicant slack instead
+  // of comparing the occupied-only bucket.
   if (statedStats.occupiedUnits !== null) {
-    if (statedStats.occupiedUnits !== calculatedStats.occupiedUnits) {
+    const reconciliation = reconcileOccupiedCount(statedStats.occupiedUnits, {
+      occupied: calculatedStats.occupiedUnits,
+      vacant: calculatedStats.vacantUnits,
+      notice: calculatedStats.noticeUnits,
+      model: calculatedStats.modelUnits,
+      down: calculatedStats.downUnits,
+      applicant: calculatedStats.applicantUnits,
+    });
+    if (!reconciliation.ok) {
       issues.push({
         type: 'summary_mismatch',
         severity: 'warning',
-        message: `Occupied count mismatch: Document states ${statedStats.occupiedUnits} but extracted ${calculatedStats.occupiedUnits}`,
+        message: `Occupied count mismatch: ${reconciliation.explanation}`,
         details: {
           field: 'occupiedUnits',
           stated: statedStats.occupiedUnits,
-          calculated: calculatedStats.occupiedUnits,
-          difference: statedStats.occupiedUnits - calculatedStats.occupiedUnits,
+          calculated: reconciliation.physical,
+          difference: statedStats.occupiedUnits - reconciliation.physical,
         },
       });
     }
   }
 
-  // Check vacant unit count mismatch
+  // Check vacant unit count mismatch. Documents count applicant units
+  // (physically empty, lease not started) as vacant, so reconcile with
+  // applicant/model/down slack instead of comparing the vacant-only bucket.
   if (statedStats.vacantUnits !== null) {
-    if (statedStats.vacantUnits !== calculatedStats.vacantUnits) {
+    const reconciliation = reconcileVacantCount(statedStats.vacantUnits, {
+      occupied: calculatedStats.occupiedUnits,
+      vacant: calculatedStats.vacantUnits,
+      notice: calculatedStats.noticeUnits,
+      model: calculatedStats.modelUnits,
+      down: calculatedStats.downUnits,
+      applicant: calculatedStats.applicantUnits,
+    });
+    if (!reconciliation.ok) {
       issues.push({
         type: 'summary_mismatch',
         severity: 'warning',
-        message: `Vacant count mismatch: Document states ${statedStats.vacantUnits} but extracted ${calculatedStats.vacantUnits}`,
+        message: `Vacant count mismatch: ${reconciliation.explanation}`,
         details: {
           field: 'vacantUnits',
           stated: statedStats.vacantUnits,
@@ -276,17 +303,19 @@ export function checkSummaryMismatch(
     }
   }
 
-  // Check occupancy rate mismatch (allow 1% tolerance)
-  if (statedStats.occupancyRate !== null && calculatedStats.physicalOccupancy !== null && calculatedStats.physicalOccupancy > 0) {
-    const diff = Math.abs(statedStats.occupancyRate - calculatedStats.physicalOccupancy);
+  // Check occupancy rate mismatch (allow 1% tolerance). Normalize the stated
+  // rate first — Excel percent cells extract as fractions (92.31% -> 0.9231).
+  const statedRate = normalizeOccupancyRatePct(statedStats.occupancyRate);
+  if (statedRate !== null && calculatedStats.physicalOccupancy !== null && calculatedStats.physicalOccupancy > 0) {
+    const diff = Math.abs(statedRate - calculatedStats.physicalOccupancy);
     if (diff > 1) { // More than 1% difference
       issues.push({
         type: 'summary_mismatch',
         severity: 'info',
-        message: `Occupancy rate mismatch: Document states ${statedStats.occupancyRate.toFixed(1)}% but calculated ${calculatedStats.physicalOccupancy.toFixed(1)}%`,
+        message: `Occupancy rate mismatch: Document states ${statedRate.toFixed(1)}% but calculated ${calculatedStats.physicalOccupancy.toFixed(1)}%`,
         details: {
           field: 'occupancyRate',
-          stated: statedStats.occupancyRate,
+          stated: statedRate,
           calculated: calculatedStats.physicalOccupancy,
           difference: diff,
         },

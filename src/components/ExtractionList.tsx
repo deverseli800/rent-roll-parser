@@ -3,6 +3,7 @@
 import { Table, Badge, Group, Text, ActionIcon, Tooltip, Stack, ThemeIcon, Box } from '@mantine/core';
 import { IconEye, IconTrash, IconFileSpreadsheet, IconCircleCheck, IconX } from '@tabler/icons-react';
 import type { ExtractionSummary } from '@/lib/types';
+import { modelLabel } from '@/lib/utils/modelLabels';
 
 interface ExtractionListProps {
   extractions: ExtractionSummary[];
@@ -30,11 +31,7 @@ function formatProcessingTime(ms: number | null): string {
 
 function formatModelName(model: string | null): string {
   if (!model) return '—';
-  // Shorten model names for display
-  if (model.includes('opus')) return 'Opus 4.5';
-  if (model.includes('sonnet-4-5')) return 'Sonnet 4.5';
-  if (model.includes('sonnet')) return 'Sonnet 4';
-  return model;
+  return modelLabel(model);
 }
 
 function formatTokens(tokens: number | null): string {

@@ -4,6 +4,10 @@ import { runVerificationChecks } from '../validation/verification';
 import { explainMismatches } from '../validation/explainer';
 import { calculateSummaryStats } from '../utils/summaryStats';
 import { updateServerExtraction } from './extractionStore';
+import type { ProgressEvent } from '../types';
+
+// Timeline safety cap — a pathological document can't grow the record unboundedly.
+const MAX_EVENTS = 100;
 
 /**
  * Background extraction job. Runs in the Next.js server process after
@@ -18,23 +22,40 @@ export function startExtractionJob(id: string, buffer: Buffer, fileName: string)
 async function runJob(id: string, buffer: Buffer, fileName: string): Promise<void> {
   const startTime = Date.now();
 
-  // Throttle progress writes to one per second, but always write stage changes.
+  // Throttle heartbeat writes to one per second, but always write stage
+  // changes and timeline events (users watch these live).
   let lastWrite = 0;
   let lastStage = '';
-  const report = (stage: string, detail?: string) => {
+  let lastDetail: string | null = null;
+  const events: ProgressEvent[] = [];
+  const report = (stage: string, detail?: string, event?: Pick<ProgressEvent, 'kind' | 'message'>) => {
     const now = Date.now();
-    if (stage === lastStage && now - lastWrite < 1000) return;
+    if (event && events.length < MAX_EVENTS) {
+      events.push({ ...event, at: new Date().toISOString() });
+    }
+    if (!event && stage === lastStage && now - lastWrite < 1000) return;
     lastWrite = now;
     lastStage = stage;
+    if (detail !== undefined) lastDetail = detail;
     updateServerExtraction(id, {
-      progress: { stage, detail: detail ?? null, updatedAt: new Date().toISOString() },
+      progress: {
+        stage,
+        // Events often come without a detail (they ARE the news) — keep the
+        // last activity line rather than blanking it.
+        detail: detail ?? lastDetail,
+        updatedAt: new Date().toISOString(),
+        events: [...events],
+      },
     });
   };
 
   try {
     const result = await parseRentRoll(buffer, fileName, report);
 
-    report('validating', 'computing summary stats and validation checks');
+    report('validating', 'computing summary stats and validation checks', {
+      kind: 'info',
+      message: `Extraction complete — ${result.units.length} units. Running validation and verification checks`,
+    });
     const calculatedStats = calculateSummaryStats(result.units);
     const issues = validateExtraction(
       result.units,
@@ -53,7 +74,16 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
     lastWrite = 0;
     report('explaining', failedChecks.length > 0
       ? `analyzing ${failedChecks.length} failed verification check${failedChecks.length === 1 ? '' : 's'}`
-      : 'finalizing');
+      : 'finalizing',
+      failedChecks.length > 0
+        ? {
+            kind: 'verify_fail',
+            message: `${failedChecks.length} verification check${failedChecks.length === 1 ? '' : 's'} failed (${failedChecks.map(c => c.name).join(', ')}) — asking AI to explain the mismatch`,
+          }
+        : {
+            kind: 'verify_pass',
+            message: `All ${verificationSummary.passed} verifiable checks passed — ${verificationSummary.confidence} confidence`,
+          });
     const explanationSummary = await explainMismatches(
       result.units,
       result.statedSummaryStats,
@@ -84,6 +114,7 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
       outputTokens: result.outputTokens,
       totalTokens: result.inputTokens + result.outputTokens,
       progress: null,
+      extractionLog: events,
     });
   } catch (error) {
     console.error(`[extraction ${id}] job failed:`, error);
@@ -93,6 +124,7 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
       processedAt: new Date().toISOString(),
       processingTimeMs: Date.now() - startTime,
       progress: null,
+      extractionLog: events,
     });
   }
 }

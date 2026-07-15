@@ -215,11 +215,22 @@ async function extractSheet(
 
   // Deterministic fast path: structure mapping + code walk, gated by
   // verification against the document's own stated totals.
-  report?.('mapping', `sheet "${info.name}" — structure analysis`);
+  report?.('mapping', `sheet "${info.name}" — structure analysis`, {
+    kind: 'info',
+    message: `Analyzing the structure of sheet "${info.name}" (${info.rows} rows) for a deterministic fast-path read`,
+  });
   const fast = await tryFastPath(info.sheet, sampleGrid(info.text), usages);
   if (fast) {
+    report?.('extracting', `sheet "${info.name}" — fast path`, {
+      kind: 'fastpath',
+      message: `Fast path succeeded on "${info.name}" — ${fast.units.length} units read deterministically and verified against stated totals (no AI extraction needed)`,
+    });
     return { result: fast, usage: usages, path: 'fast' };
   }
+  report?.('extracting', `sheet "${info.name}" — full AI extraction`, {
+    kind: 'fastpath',
+    message: `Fast path not viable for "${info.name}" (layout unsupported or totals didn't reconcile) — using the AI model ladder`,
+  });
 
   const basePrompt = `${EXTRACTION_RULES}${detectColumnHints(info.text)}
 
@@ -248,7 +259,7 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
 }> {
   // cellNF/cellText populate cell.z (number format) and cell.w (display text),
   // which we need to detect date cells and render them as ISO dates.
-  report?.('reading', 'parsing workbook');
+  report?.('reading', 'parsing workbook', { kind: 'info', message: 'Reading the Excel workbook' });
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: true, cellText: true });
   const allUsage: AIUsage[] = [];
 
@@ -272,8 +283,17 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
   let selectedNames: string[];
   if (candidates.length === 1) {
     selectedNames = [candidates[0].name];
+    report?.('triaging', undefined, {
+      kind: 'info',
+      message: infos.length === 1
+        ? `Workbook has one sheet: "${candidates[0].name}"`
+        : `Identified "${candidates[0].name}" as the rent roll among ${infos.length} sheets`,
+    });
   } else {
-    report?.('triaging', `selecting rent roll sheets among ${candidates.length} candidates`);
+    report?.('triaging', `selecting rent roll sheets among ${candidates.length} candidates`, {
+      kind: 'info',
+      message: `${candidates.length} sheets look like they could be rent rolls — asking AI to triage`,
+    });
     const triage = await triageSheets(candidates);
     allUsage.push(...triage.usage);
     selectedNames = triage.selected;
@@ -281,6 +301,10 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
       // Fall back to the highest-scoring candidate
       selectedNames = [candidates[0].name];
     }
+    report?.('triaging', undefined, {
+      kind: 'decision',
+      message: `Selected ${selectedNames.length} sheet${selectedNames.length === 1 ? '' : 's'} to extract: ${selectedNames.map(n => `"${n}"`).join(', ')}`,
+    });
   }
 
   const selected = infos.filter(i => selectedNames.includes(i.name));
@@ -321,6 +345,14 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
       ).length;
       if (matched === results[b].units.length) keep[b] = false;
     }
+  }
+
+  const droppedNames = selected.filter((_, i) => !keep[i]).map(s => `"${s.name}"`);
+  if (droppedNames.length > 0) {
+    report?.('merging', undefined, {
+      kind: 'decision',
+      message: `Dropped ${droppedNames.join(', ')} — it re-lists units already extracted from another sheet (update log, not a separate building)`,
+    });
   }
 
   // Merge results across sheets. Units are NOT deduped across sheets —
