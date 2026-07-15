@@ -130,6 +130,14 @@ async function main() {
     `- **Status breakdown:** ${s.occupiedUnits} occupied, ${s.vacantUnits} vacant, ${s.noticeUnits} notice, ${s.applicantUnits} applicant, ${s.modelUnits} model, ${s.downUnits} down`,
     `- **Physical occupancy:** ${s.physicalOccupancy !== null ? s.physicalOccupancy.toFixed(1) + '%' : '—'}`,
     `- **Total monthly rent:** $${fmt(s.totalMonthlyRent)}${s.totalSqft ? `  |  **Total sqft:** ${fmt(s.totalSqft)}` : ''}`,
+    ...((s.totalMarketRent ?? null) !== null || (s.totalSubsidyRent ?? null) !== null || (s.totalConcessions ?? null) !== null || (s.totalEmployeeDiscount ?? null) !== null
+      ? [`- **Rent components:** ${[
+          (s.totalMarketRent ?? null) !== null ? `market $${fmt(s.totalMarketRent!)}` : null,
+          (s.totalSubsidyRent ?? null) !== null ? `subsidy $${fmt(s.totalSubsidyRent!)} (tenant-paid $${fmt(s.totalTenantPaidRent ?? null)})` : null,
+          (s.totalEmployeeDiscount ?? null) !== null ? `employee discount $${fmt(s.totalEmployeeDiscount!)}` : null,
+          (s.totalConcessions ?? null) !== null ? `concessions $${fmt(s.totalConcessions!)}` : null,
+        ].filter(Boolean).join('  |  ')}`]
+      : []),
     `- **Verification:** ${verificationSummary.passed}/${verificationSummary.total} checks passed${verificationSummary.skipped > 0 ? ` (${verificationSummary.skipped} skipped — no stated value in the document to check against)` : ''} — ${verificationSummary.confidence} confidence`,
     `- **Model:** ${result.modelUsed}  |  **Tokens:** ${fmt(result.inputTokens)} in / ${fmt(result.outputTokens)} out  |  **Est. cost:** ${formatUSD(costUSD)} (cache-aware)  |  **Time:** ${Math.round((Date.now() - startTime) / 1000)}s`,
   ];

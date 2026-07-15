@@ -40,6 +40,12 @@ export function runVerificationChecks(
   // Check 7: Total sqft matches
   checks.push(checkTotalSqft(statedStats, calculatedStats));
 
+  // Check 8: Total market rent matches — only included when either side has
+  // market data, so documents without a market rent column aren't penalized
+  // with a permanently-skipped check.
+  const marketCheck = checkTotalMarketRent(statedStats, calculatedStats);
+  if (marketCheck) checks.push(marketCheck);
+
   // Calculate summary
   const passed = checks.filter(c => c.status === 'passed').length;
   const failed = checks.filter(c => c.status === 'failed').length;
@@ -197,6 +203,47 @@ function checkTotalRent(
     description: 'Calculated tenant rent reconciles with stated total',
     status: reconciliation.ok ? 'passed' : 'failed',
     details: reconciliation.explanation,
+  };
+}
+
+function checkTotalMarketRent(
+  statedStats: StatedSummaryStats | null,
+  calculatedStats: SummaryStats | null
+): VerificationCheck | null {
+  const stated = statedStats?.totalMarketRent ?? null;
+  const calculated = calculatedStats?.totalMarketRent ?? null;
+  if (stated === null && calculated === null) return null; // document has no market rent data
+
+  if (stated === null || calculated === null) {
+    return {
+      id: 'total-market-rent',
+      name: 'Total Market Rent',
+      description: 'Calculated market rent total matches stated total',
+      status: 'skipped',
+      details: stated === null
+        ? 'No stated market rent total in document'
+        : 'No per-unit market rents extracted to compare against the stated total',
+    };
+  }
+
+  const diff = Math.abs(stated - calculated);
+  const tolerance = Math.max(5, stated * 0.005);
+  if (diff <= tolerance) {
+    return {
+      id: 'total-market-rent',
+      name: 'Total Market Rent',
+      description: 'Calculated market rent total matches stated total',
+      status: 'passed',
+      details: `$${Math.round(calculated).toLocaleString()} matches stated $${Math.round(stated).toLocaleString()}`,
+    };
+  }
+
+  return {
+    id: 'total-market-rent',
+    name: 'Total Market Rent',
+    description: 'Calculated market rent total matches stated total',
+    status: 'failed',
+    details: `Calculated $${Math.round(calculated).toLocaleString()} vs stated $${Math.round(stated).toLocaleString()} (diff: $${Math.round(diff).toLocaleString()})`,
   };
 }
 

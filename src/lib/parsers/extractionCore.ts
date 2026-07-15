@@ -8,6 +8,16 @@ import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount } from
  * used by both the Excel and PDF parsers.
  */
 
+// Stated totals use a -1 sentinel instead of null: the structured-outputs
+// compiler limits schemas to 16 union-typed parameters, and the per-unit
+// fields need the unions more (a forced 0/-1 on every unit would inflate
+// output tokens; a -1 on a handful of stated totals costs nothing).
+// normalizeStatedSentinels() converts them back to null after parsing.
+const statedNum = {
+  type: 'number',
+  description: 'Value STATED in the document; -1 if the document does not state one (never compute it yourself)',
+} as const;
+
 // JSON Schema for structured output (structured-outputs compatible subset:
 // no numeric/string constraints, additionalProperties:false everywhere).
 export const EXTRACTION_SCHEMA: Record<string, unknown> = {
@@ -17,19 +27,20 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
   properties: {
     propertyName: { type: ['string', 'null'] },
     statedTotalUnits: {
-      type: ['number', 'null'],
-      description: 'Total unit count stated IN the document (not your count)',
+      type: 'number',
+      description: 'Total unit count stated IN the document (not your count); -1 if the document does not state one',
     },
     statedSummary: {
       type: 'object',
       additionalProperties: false,
-      required: ['totalMonthlyRent', 'totalSqft', 'occupancyRate', 'occupiedUnits', 'vacantUnits'],
+      required: ['totalMonthlyRent', 'totalMarketRent', 'totalSqft', 'occupancyRate', 'occupiedUnits', 'vacantUnits'],
       properties: {
-        totalMonthlyRent: { type: ['number', 'null'] },
-        totalSqft: { type: ['number', 'null'] },
-        occupancyRate: { type: ['number', 'null'] },
-        occupiedUnits: { type: ['number', 'null'] },
-        vacantUnits: { type: ['number', 'null'] },
+        totalMonthlyRent: statedNum,
+        totalMarketRent: statedNum,
+        totalSqft: statedNum,
+        occupancyRate: statedNum,
+        occupiedUnits: statedNum,
+        vacantUnits: statedNum,
       },
     },
     units: {
@@ -37,7 +48,13 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['unitNumber', 'status', 'monthlyRent', 'tenantName'],
+        // The four rent-component fields are REQUIRED (nullable) on purpose:
+        // grammar compilation cost grows explosively with the number of
+        // OPTIONAL properties in a strict object (making them optional pushed
+        // this object to 11 optional keys and timed out compilation on the
+        // fast model), while required-nullable keys compile like the original
+        // schema. Union budget: 14 of the 16 allowed union-typed parameters.
+        required: ['unitNumber', 'status', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName'],
         properties: {
           unitNumber: { type: 'string' },
           status: {
@@ -45,6 +62,10 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
             enum: ['occupied', 'vacant', 'notice', 'model', 'down', 'applicant'],
           },
           monthlyRent: { type: ['number', 'null'] },
+          marketRent: { type: ['number', 'null'], description: 'Market/asking rent; null when the document has no market rent column' },
+          subsidyRent: { type: ['number', 'null'], description: 'Subsidy/HAP portion of monthlyRent; null when not shown separately' },
+          employeeDiscount: { type: ['number', 'null'], description: 'Recurring employee/manager discount, sign as displayed; null when none' },
+          concession: { type: ['number', 'null'], description: 'Recurring concession/credit, sign as displayed; null when none' },
           tenantName: { type: ['string', 'null'] },
           unitSqft: { type: ['number', 'null'] },
           unitType: { type: ['string', 'null'] },
@@ -63,6 +84,10 @@ export interface ExtractedUnit {
   unitNumber: string;
   status: UnitStatus;
   monthlyRent: number | null;
+  marketRent?: number | null;
+  subsidyRent?: number | null;
+  employeeDiscount?: number | null;
+  concession?: number | null;
   tenantName: string | null;
   unitSqft?: number | null;
   unitType?: string | null;
@@ -78,6 +103,7 @@ export interface ExtractionResult {
   statedTotalUnits: number | null;
   statedSummary: {
     totalMonthlyRent: number | null;
+    totalMarketRent?: number | null;
     totalSqft: number | null;
     occupancyRate: number | null;
     occupiedUnits: number | null;
@@ -125,6 +151,21 @@ FIELD RULES:
   monthlyRent — even though the document's stated base-rent total may exclude it (that is expected;
   do not drop the amount just to make totals match).
   Vacant unit with blank/0 rent -> null or 0 as shown.
+- marketRent: the unit's MARKET/asking/scheduled rent when the document has such a column
+  (common names: "Market Rent", "Market", "Scheduled Rent", "Gross Potential"). Populate it
+  for EVERY unit that shows a value — including vacant units. null when no market rent column
+  exists.
+- subsidyRent: the SUBSIDY portion of the unit's rent when shown separately (Section 8 / HAP /
+  "Housing Assistance" / "Subsidy" columns or charge rows). monthlyRent must still be the TOTAL
+  contract rent (tenant portion + subsidy); subsidyRent reports the subsidy component so
+  tenant-paid rent can be derived as monthlyRent - subsidyRent. null when the document shows no
+  separate subsidy amount.
+- employeeDiscount: a recurring employee/manager discount shown for the unit (charge codes like
+  "EMPL", "Employee Discount", "Manager Credit"). Keep the sign as displayed (usually negative).
+  null when none.
+- concession: a recurring monthly concession/credit shown for the unit (charge codes like "CONC",
+  "Concession", "Rent Credit"). Keep the sign as displayed (usually negative). Do NOT subtract
+  concessions from monthlyRent — report them separately. null when none.
 - tenantName: as displayed ("Last, First" stays "Last, First"). Placeholder text like "VACANT" -> null.
 - unitType: copy the EXACT text shown (e.g. "4/1" stays "4/1" — do NOT expand to "4BR/1BA"; "2/1.00" stays "2/1.00"). If the document has ANY unit type / floorplan / bedrooms-baths / use-type column, ALWAYS populate unitType from it for every unit (commercial use codes like "CM" or "Store" count). null only when no such column exists.
 - unitSqft: number or null.
@@ -137,7 +178,7 @@ DUPLICATES: if the same unit appears on multiple rows (e.g., current resident + 
 
 MULTI-PROPERTY DOCUMENTS: some documents cover multiple buildings/properties. Extract units from ALL of them. Different buildings can each have a unit "1A" — that is not a duplicate; output both.
 
-STATED TOTALS: separately report any totals STATED in the document itself (total unit count, total monthly rent, occupancy) in statedTotalUnits/statedSummary. These must come from the document text, not from your own arithmetic. If the document states an ANNUAL total rent, convert to monthly (divide by 12). If multiple properties each state totals, sum them. When the document shows MULTIPLE total figures, statedSummary.totalMonthlyRent must be the total of CURRENT/ACTUAL RENT — the figure matching the rent column you extracted per unit — NOT a market/potential/scheduled rent total, and NOT a total-charges figure that adds fees (trash, pet, parking) on top of rent.
+STATED TOTALS: separately report any totals STATED in the document itself (total unit count, total monthly rent, occupancy) in statedTotalUnits/statedSummary. These must come from the document text, not from your own arithmetic. If the document states an ANNUAL total rent, convert to monthly (divide by 12). If multiple properties each state totals, sum them. When the document shows MULTIPLE total figures, statedSummary.totalMonthlyRent must be the total of CURRENT/ACTUAL RENT — the figure matching the rent column you extracted per unit — NOT a market/potential/scheduled rent total, and NOT a total-charges figure that adds fees (trash, pet, parking) on top of rent. A stated market/potential/scheduled rent total goes in statedSummary.totalMarketRent instead; if the document states ONLY a market-rent total and no actual-rent total, put it in totalMarketRent and report totalMonthlyRent as -1. For statedTotalUnits and every statedSummary field, report -1 when the document does not state that value (do NOT compute it yourself; -1 means "not stated").
 
 Before finishing, recount: every unit row in the document must appear exactly once in your output.`;
 
@@ -182,6 +223,10 @@ export function toMVPUnits(units: ExtractedUnit[], sourcePage?: number): MVPUnit
     unitNumber: String(u.unitNumber).trim(),
     status: normalizeStatus(u.status),
     monthlyRent: u.monthlyRent ?? null,
+    marketRent: u.marketRent ?? null,
+    subsidyRent: u.subsidyRent ?? null,
+    employeeDiscount: u.employeeDiscount ?? null,
+    concession: u.concession ?? null,
     tenantName: cleanPlaceholder(u.tenantName),
     unitSqft: u.unitSqft ?? null,
     unitType: cleanPlaceholder(u.unitType),
@@ -195,16 +240,36 @@ export function toMVPUnits(units: ExtractedUnit[], sourcePage?: number): MVPUnit
   }));
 }
 
+/**
+ * Convert the -1 "not stated" sentinels (see statedNum above) back to null.
+ * Must run on every EXTRACTION_SCHEMA parse before verification or reporting.
+ */
+export function normalizeStatedSentinels(r: ExtractionResult): ExtractionResult {
+  const n = (v: number | null | undefined): number | null =>
+    v === null || v === undefined || v < 0 ? null : v;
+  r.statedTotalUnits = n(r.statedTotalUnits);
+  if (r.statedSummary) {
+    r.statedSummary.totalMonthlyRent = n(r.statedSummary.totalMonthlyRent);
+    r.statedSummary.totalMarketRent = n(r.statedSummary.totalMarketRent);
+    r.statedSummary.totalSqft = n(r.statedSummary.totalSqft);
+    r.statedSummary.occupancyRate = n(r.statedSummary.occupancyRate);
+    r.statedSummary.occupiedUnits = n(r.statedSummary.occupiedUnits);
+    r.statedSummary.vacantUnits = n(r.statedSummary.vacantUnits);
+  }
+  return r;
+}
+
 export function toStatedSummaryStats(r: ExtractionResult): StatedSummaryStats | null {
   const s = r.statedSummary;
   const hasAny =
     r.statedTotalUnits !== null ||
-    (s && (s.totalMonthlyRent !== null || s.totalSqft !== null ||
+    (s && (s.totalMonthlyRent !== null || (s.totalMarketRent ?? null) !== null || s.totalSqft !== null ||
       s.occupancyRate !== null || s.occupiedUnits !== null || s.vacantUnits !== null));
   if (!hasAny) return null;
   return {
     totalUnits: r.statedTotalUnits ?? null,
     totalMonthlyRent: s?.totalMonthlyRent ?? null,
+    totalMarketRent: s?.totalMarketRent ?? null,
     totalSqft: s?.totalSqft ?? null,
     // Excel percent cells extract as fractions (92.31% -> 0.9231) — store 0-100.
     occupancyRate: normalizeOccupancyRatePct(s?.occupancyRate ?? null),
@@ -235,9 +300,9 @@ const PREVIEW_PROMPT = `Report ONLY the summary information this rent roll docum
 
 Look for a summary/totals section (often at the very top or bottom): "Total Units", a "Summary" block, occupancy percentages, total monthly rent / total sqft rows, current-vs-vacant unit counts.
 - propertyName: the property name shown in the document, if any.
-- statedTotalUnits: the total unit count the document STATES (not your own count of rows).
-- statedSummary: totals the document states. Use null for anything the document does not explicitly state — do NOT compute, sum, or estimate values yourself.
-  When the document shows MULTIPLE summary figures, report the CURRENT/actual ones: totalMonthlyRent is the current RENT total (not market/scheduled/potential rent, and not a total-charges figure that adds fees); occupancyRate is current physical occupancy (not projected, leased %, or economic occupancy).
+- statedTotalUnits: the total unit count the document STATES (not your own count of rows); -1 if not stated.
+- statedSummary: totals the document states. Report -1 for anything the document does not explicitly state — do NOT compute, sum, or estimate values yourself.
+  When the document shows MULTIPLE summary figures, report the CURRENT/actual ones: totalMonthlyRent is the current RENT total (not market/scheduled/potential rent, and not a total-charges figure that adds fees); a stated market/potential rent total goes in totalMarketRent; occupancyRate is current physical occupancy (not projected, leased %, or economic occupancy).
 - units: [] — always empty in this pass.
 This is a fast first pass. Respond as quickly as possible.`;
 
@@ -274,6 +339,7 @@ export async function extractStatedPreview(
       maxTokens: 16000, // adaptive thinking shares this budget; the answer itself is tiny
     });
     usages.push(usage);
+    normalizeStatedSentinels(data);
     const preview: PreviewData = {
       propertyName: data.propertyName ?? null,
       statedUnitCount: data.statedTotalUnits ?? null,
@@ -331,6 +397,8 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
     r.statedTotalUnits !== null && r.units.length === r.statedTotalUnits;
 
   const statedRent = r.statedSummary?.totalMonthlyRent ?? null;
+  const statedMarket = r.statedSummary?.totalMarketRent ?? null;
+  const sumMarket = r.units.reduce((s, u) => s + (u.marketRent ?? 0), 0);
   if (statedRent !== null && statedRent > 0) {
     hasStatedAnchors = true;
     const sum = r.units.reduce((s, u) => s + (u.monthlyRent ?? 0), 0);
@@ -339,15 +407,40 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
     // stated total, the document's total likely excludes other income (antenna,
     // laundry) that legitimately belongs to units — not an extraction failure.
     const excusableExcess = countMatches && sum > statedRent && sum <= statedRent * 1.05;
-    if (Math.abs(sum - statedRent) > tol && !excusableExcess) {
+    // Stated-total misidentification guard: when the extracted MARKET rents sum
+    // to the "stated rent total", the total was actually the market figure (the
+    // model put it in the wrong slot). The per-unit rents are fine — reclassify
+    // the stated value instead of failing a correct extraction.
+    const statedRentIsMarketTotal =
+      Math.abs(sum - statedRent) > tol &&
+      sumMarket > 0 &&
+      Math.abs(sumMarket - statedRent) <= Math.max(5, statedRent * 0.005);
+    if (statedRentIsMarketTotal) {
+      if (statedMarket === null) r.statedSummary.totalMarketRent = statedRent;
+      r.statedSummary.totalMonthlyRent = null;
+    } else if (Math.abs(sum - statedRent) > tol && !excusableExcess) {
       let hint = '';
       if (sum > statedRent * 1.02) {
         hint = ' — the extracted rents are likely each unit\'s TOTAL charges (or market rent) instead of the base RENT charge line; use only the base rent charge per unit';
       } else if (sum < statedRent * 0.98) {
-        hint = ' — you likely missed units, or used the tenant-paid portion instead of the full contract rent';
+        hint = ' — you likely missed units, or used the tenant-paid portion instead of the full contract rent. But if the stated figure is actually a MARKET/potential rent total, report it in statedSummary.totalMarketRent (not totalMonthlyRent) and keep the actual in-place rents';
       }
       issues.push(
         `Document states total monthly rent ${statedRent.toFixed(2)} but extracted rents sum to ${sum.toFixed(2)}${hint}`
+      );
+    }
+  }
+
+  // Market-rent anchor: when the document states a market total AND the sheet
+  // has a well-populated market rent column, their disagreement means the
+  // column was misread (or half-skipped).
+  if (statedMarket !== null && statedMarket > 0) {
+    hasStatedAnchors = true;
+    const withMarket = r.units.filter(u => u.marketRent !== null && u.marketRent !== undefined).length;
+    const tol = Math.max(5, statedMarket * 0.005);
+    if (withMarket >= r.units.length * 0.8 && Math.abs(sumMarket - statedMarket) > tol) {
+      issues.push(
+        `Document states total market rent ${statedMarket.toFixed(2)} but extracted market rents sum to ${sumMarket.toFixed(2)} — check the market rent column for every unit (including vacant units)`
       );
     }
   }
@@ -475,6 +568,7 @@ export async function runExtractionLadder(
           : undefined,
       });
       usages.push(usage);
+      normalizeStatedSentinels(data);
       const verification = verifyAgainstStated(data);
       if (verification.ok) {
         report?.('verifying', label, {
@@ -502,8 +596,8 @@ export async function runExtractionLadder(
         propertyName: null,
         statedTotalUnits: null,
         statedSummary: {
-          totalMonthlyRent: null, totalSqft: null, occupancyRate: null,
-          occupiedUnits: null, vacantUnits: null,
+          totalMonthlyRent: null, totalMarketRent: null, totalSqft: null,
+          occupancyRate: null, occupiedUnits: null, vacantUnits: null,
         },
         units: [],
       };
