@@ -14,6 +14,8 @@ export interface ParseResult {
   modelUsed: string;
   inputTokens: number;
   outputTokens: number;
+  // Cache-aware estimated API cost across all calls (null if unpriceable)
+  costUSD: number | null;
 }
 
 /**
@@ -39,6 +41,7 @@ export async function parseRentRoll(
       modelUsed: result.modelUsed,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+      costUSD: result.costUSD,
     };
   }
 
@@ -55,6 +58,7 @@ export async function parseRentRoll(
       modelUsed: result.modelUsed,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+      costUSD: result.costUSD,
     };
   }
 

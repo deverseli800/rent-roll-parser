@@ -26,6 +26,8 @@ import { validateExtraction } from '../src/lib/validation/validators';
 import { runVerificationChecks } from '../src/lib/validation/verification';
 import { explainMismatches } from '../src/lib/validation/explainer';
 import { calculateSummaryStats } from '../src/lib/utils/summaryStats';
+import { estimateCostUSD, formatUSD } from '../src/lib/utils/aiCost';
+import type { AIUsage } from '../src/lib/parsers/aiClient';
 import type { ProgressEvent } from '../src/lib/types';
 
 function usage(): never {
@@ -79,9 +81,14 @@ async function main() {
   if (failedChecks.length > 0) {
     console.error(`[${Math.floor((Date.now() - startTime) / 1000)}s] ${failedChecks.length} verification check(s) failed — asking AI to explain the mismatch`);
   }
+  const explainerUsages: AIUsage[] = [];
   const explanationSummary = await explainMismatches(
-    result.units, result.statedSummaryStats, calculatedStats, failedChecks
+    result.units, result.statedSummaryStats, calculatedStats, failedChecks, explainerUsages
   );
+  const explainerCost = estimateCostUSD(explainerUsages);
+  const costUSD = result.costUSD !== null || explainerCost !== null
+    ? (result.costUSD ?? 0) + (explainerCost ?? 0)
+    : null;
 
   const extraction = {
     fileName: path.basename(filePath),
@@ -93,6 +100,7 @@ async function main() {
     modelUsed: result.modelUsed,
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
+    costUSD,
     statedUnitCount: result.statedUnitCount,
     extractedUnitCount: result.units.length,
     countMatch: result.statedUnitCount !== null ? result.units.length === result.statedUnitCount : null,
@@ -123,7 +131,7 @@ async function main() {
     `- **Physical occupancy:** ${s.physicalOccupancy !== null ? s.physicalOccupancy.toFixed(1) + '%' : '—'}`,
     `- **Total monthly rent:** $${fmt(s.totalMonthlyRent)}${s.totalSqft ? `  |  **Total sqft:** ${fmt(s.totalSqft)}` : ''}`,
     `- **Verification:** ${verificationSummary.passed}/${verificationSummary.total} checks passed${verificationSummary.skipped > 0 ? ` (${verificationSummary.skipped} skipped — no stated value in the document to check against)` : ''} — ${verificationSummary.confidence} confidence`,
-    `- **Model:** ${result.modelUsed}  |  **Tokens:** ${fmt(result.inputTokens)} in / ${fmt(result.outputTokens)} out  |  **Time:** ${Math.round((Date.now() - startTime) / 1000)}s`,
+    `- **Model:** ${result.modelUsed}  |  **Tokens:** ${fmt(result.inputTokens)} in / ${fmt(result.outputTokens)} out  |  **Est. cost:** ${formatUSD(costUSD)} (cache-aware)  |  **Time:** ${Math.round((Date.now() - startTime) / 1000)}s`,
   ];
   for (const check of failedChecks) {
     lines.push('', `## Failed check: ${check.name}`, check.details ?? '');

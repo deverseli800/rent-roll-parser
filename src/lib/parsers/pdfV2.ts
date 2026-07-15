@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { MVPUnit, StatedSummaryStats } from '../types';
 import { sumUsage, type AIUsage } from './aiClient';
+import { estimateCostUSD } from '../utils/aiCost';
 import {
   EXTRACTION_RULES,
   extractStatedPreview,
@@ -36,6 +37,7 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
   modelUsed: string;
   inputTokens: number;
   outputTokens: number;
+  costUSD: number | null;
 }> {
   const usages: AIUsage[] = [];
   const base64PDF = buffer.toString('base64');
@@ -74,5 +76,6 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
     modelUsed: usage.modelUsed,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    costUSD: estimateCostUSD(usages),
   };
 }

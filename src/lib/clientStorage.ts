@@ -84,6 +84,7 @@ export function getExtractionSummaries(): ExtractionSummary[] {
     error: e.error,
     modelUsed: e.modelUsed ?? null,
     totalTokens: e.totalTokens ?? null,
+    costUSD: e.costUSD ?? null,
     verificationPassed: e.verificationSummary?.passed ?? null,
     verificationFailed: e.verificationSummary?.failed ?? null,
     verificationSkipped: e.verificationSummary?.skipped ?? null,

@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { MODELS, type AIUsage } from '../parsers/aiClient';
 import type { MVPUnit, StatedSummaryStats, SummaryStats, VerificationCheck, MismatchExplanation, ExplanationSummary } from '../types';
 
 const EXPLANATION_PROMPT = `You are analyzing a rent roll extraction to explain WHY mismatches exist between stated values (from the document) and calculated values (from extracted units).
@@ -61,7 +62,9 @@ export async function explainMismatches(
   units: MVPUnit[],
   statedStats: StatedSummaryStats | null,
   calculatedStats: SummaryStats | null,
-  failedChecks: VerificationCheck[]
+  failedChecks: VerificationCheck[],
+  /** When provided, the explainer's API usage is appended for cost tracking. */
+  usages?: AIUsage[]
 ): Promise<ExplanationSummary> {
   // If no failed checks, nothing to explain
   if (failedChecks.length === 0) {
@@ -110,7 +113,7 @@ export async function explainMismatches(
     const client = new Anthropic({ apiKey });
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
+      model: MODELS.fast,
       max_tokens: 4000,
       messages: [
         {
@@ -118,6 +121,13 @@ export async function explainMismatches(
           content: prompt,
         },
       ],
+    });
+    usages?.push({
+      modelUsed: response.model,
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      cacheCreationInputTokens: response.usage.cache_creation_input_tokens ?? 0,
+      cacheReadInputTokens: response.usage.cache_read_input_tokens ?? 0,
     });
 
     const textContent = response.content.find(c => c.type === 'text');

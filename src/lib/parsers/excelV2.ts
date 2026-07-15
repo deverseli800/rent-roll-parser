@@ -12,6 +12,7 @@ import {
   type ProgressReporter,
 } from './extractionCore';
 import type Anthropic from '@anthropic-ai/sdk';
+import { estimateCostUSD } from '../utils/aiCost';
 
 /**
  * Excel parser v2.
@@ -274,6 +275,7 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
   modelUsed: string;
   inputTokens: number;
   outputTokens: number;
+  costUSD: number | null;
 }> {
   // cellNF/cellText populate cell.z (number format) and cell.w (display text),
   // which we need to detect date cells and render them as ISO dates.
@@ -395,6 +397,7 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
     modelUsed: usage.modelUsed,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    costUSD: estimateCostUSD(allUsage),
   };
 }
 

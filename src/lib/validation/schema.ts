@@ -131,6 +131,7 @@ export const RentRollExtractionSchema = z.object({
   inputTokens: z.number().nullable(),
   outputTokens: z.number().nullable(),
   totalTokens: z.number().nullable(),
+  costUSD: z.number().nullable().optional(),
 
   error: z.string().nullable(),
 });

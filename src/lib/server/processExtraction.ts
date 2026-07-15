@@ -4,7 +4,9 @@ import { runVerificationChecks } from '../validation/verification';
 import { explainMismatches } from '../validation/explainer';
 import { calculateSummaryStats } from '../utils/summaryStats';
 import { updateServerExtraction } from './extractionStore';
+import type { AIUsage } from '../parsers/aiClient';
 import type { ProgressReporter } from '../parsers/extractionCore';
+import { estimateCostUSD } from '../utils/aiCost';
 import type { ProgressEvent } from '../types';
 
 // Timeline safety cap — a pathological document can't grow the record unboundedly.
@@ -95,12 +97,18 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
             kind: 'verify_pass',
             message: `All ${verificationSummary.passed} verifiable checks passed — ${verificationSummary.confidence} confidence`,
           });
+    const explainerUsages: AIUsage[] = [];
     const explanationSummary = await explainMismatches(
       result.units,
       result.statedSummaryStats,
       calculatedStats,
-      failedChecks
+      failedChecks,
+      explainerUsages
     );
+    const explainerCost = estimateCostUSD(explainerUsages);
+    const costUSD = result.costUSD !== null || explainerCost !== null
+      ? (result.costUSD ?? 0) + (explainerCost ?? 0)
+      : null;
 
     updateServerExtraction(id, {
       units: result.units,
@@ -124,6 +132,7 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       totalTokens: result.inputTokens + result.outputTokens,
+      costUSD,
       progress: null,
       extractionLog: events,
     });
