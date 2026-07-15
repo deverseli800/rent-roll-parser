@@ -208,6 +208,10 @@ export interface RentRollExtraction {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  // Cache-aware estimated API cost in USD across all calls in the run
+  // (extraction + preview + triage + explainer). Optional: records processed
+  // before this field exist without it.
+  costUSD?: number | null;
 
   // Error info if failed
   error: string | null;
@@ -235,6 +239,7 @@ export interface ExtractionSummary {
   // AI usage tracking
   modelUsed: string | null;
   totalTokens: number | null;
+  costUSD?: number | null;
   // Verification summary
   verificationPassed: number | null;
   verificationFailed: number | null;

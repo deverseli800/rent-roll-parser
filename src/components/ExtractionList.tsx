@@ -4,6 +4,7 @@ import { Table, Badge, Group, Text, ActionIcon, Tooltip, Stack, ThemeIcon, Box }
 import { IconEye, IconTrash, IconFileSpreadsheet, IconCircleCheck, IconX } from '@tabler/icons-react';
 import type { ExtractionSummary } from '@/lib/types';
 import { modelLabel } from '@/lib/utils/modelLabels';
+import { formatUSD } from '@/lib/utils/aiCost';
 
 interface ExtractionListProps {
   extractions: ExtractionSummary[];
@@ -133,6 +134,7 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
             <Table.Th>Status</Table.Th>
             <Table.Th>Model</Table.Th>
             <Table.Th>Tokens</Table.Th>
+            <Table.Th>Cost</Table.Th>
             <Table.Th>Time</Table.Th>
             <Table.Th>Uploaded</Table.Th>
             <Table.Th>Actions</Table.Th>
@@ -177,6 +179,11 @@ export function ExtractionList({ extractions, onView, onDelete }: ExtractionList
             <Table.Td>
               <Text size="sm" c="dimmed">
                 {formatTokens(extraction.totalTokens)}
+              </Text>
+            </Table.Td>
+            <Table.Td>
+              <Text size="sm" c="dimmed">
+                {formatUSD(extraction.costUSD)}
               </Text>
             </Table.Td>
             <Table.Td>

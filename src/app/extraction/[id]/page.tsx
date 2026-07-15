@@ -60,6 +60,7 @@ import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHi
 import { calculateSummaryStats, nonTenantRentFromUnits } from '@/lib/utils/summaryStats';
 import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '@/lib/utils/occupancy';
 import { modelLabel } from '@/lib/utils/modelLabels';
+import { formatUSD } from '@/lib/utils/aiCost';
 import * as XLSX from 'xlsx';
 
 // Register AG Grid modules
@@ -394,6 +395,10 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
         <div>
           <Text size="sm" c="dimmed">Tokens</Text>
           <Text size="lg" fw={600}>{formatTokens(extraction.totalTokens)}</Text>
+        </div>
+        <div>
+          <Text size="sm" c="dimmed">Est. API Cost</Text>
+          <Text size="lg" fw={600}>{formatUSD(extraction.costUSD)}</Text>
         </div>
       </Group>
     </Card>
