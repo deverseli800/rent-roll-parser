@@ -21,6 +21,10 @@ interface ColumnMap {
   unitNumber: number | null;
   status: number | null;
   monthlyRent: number | null;
+  marketRent: number | null;
+  subsidyRent: number | null;
+  employeeDiscount: number | null;
+  concession: number | null;
   tenantName: number | null;
   tenantName2: number | null;
   unitSqft: number | null;
@@ -39,12 +43,16 @@ interface SheetStructure {
     chargeDescCol: number | null;
     chargeAmtCol: number | null;
     rentChargeCodes: string[];
+    subsidyChargeCodes: string[];
+    employeeDiscountChargeCodes: string[];
+    concessionChargeCodes: string[];
   } | null;
   skipPatterns: string[];
   stopMarkers: string[];
   statedTotalUnits: number | null;
   statedSummary: {
     totalMonthlyRent: number | null;
+    totalMarketRent: number | null;
     totalSqft: number | null;
     occupancyRate: number | null;
     occupiedUnits: number | null;
@@ -67,9 +75,10 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
     columns: {
       type: 'object',
       additionalProperties: false,
-      required: ['unitNumber', 'status', 'monthlyRent', 'tenantName', 'tenantName2', 'unitSqft', 'unitType', 'moveInDate', 'moveOutDate', 'leaseStartDate', 'leaseEndDate'],
+      required: ['unitNumber', 'status', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'tenantName2', 'unitSqft', 'unitType', 'moveInDate', 'moveOutDate', 'leaseStartDate', 'leaseEndDate'],
       properties: {
-        unitNumber: colIdx, status: colIdx, monthlyRent: colIdx,
+        unitNumber: colIdx, status: colIdx, monthlyRent: colIdx, marketRent: colIdx,
+        subsidyRent: colIdx, employeeDiscount: colIdx, concession: colIdx,
         tenantName: colIdx, tenantName2: colIdx, unitSqft: colIdx, unitType: colIdx,
         moveInDate: colIdx, moveOutDate: colIdx,
         leaseStartDate: colIdx, leaseEndDate: colIdx,
@@ -78,11 +87,14 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
     block: {
       type: 'object',
       additionalProperties: false,
-      required: ['chargeDescCol', 'chargeAmtCol', 'rentChargeCodes'],
+      required: ['chargeDescCol', 'chargeAmtCol', 'rentChargeCodes', 'subsidyChargeCodes', 'employeeDiscountChargeCodes', 'concessionChargeCodes'],
       properties: {
         chargeDescCol: colIdx,
         chargeAmtCol: colIdx,
         rentChargeCodes: { type: 'array', items: { type: 'string' } },
+        subsidyChargeCodes: { type: 'array', items: { type: 'string' } },
+        employeeDiscountChargeCodes: { type: 'array', items: { type: 'string' } },
+        concessionChargeCodes: { type: 'array', items: { type: 'string' } },
       },
     },
     skipPatterns: { type: 'array', items: { type: 'string' } },
@@ -91,10 +103,10 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
     statedSummary: {
       type: 'object',
       additionalProperties: false,
-      required: ['totalMonthlyRent', 'totalSqft', 'occupancyRate', 'occupiedUnits', 'vacantUnits'],
+      required: ['totalMonthlyRent', 'totalMarketRent', 'totalSqft', 'occupancyRate', 'occupiedUnits', 'vacantUnits'],
       properties: {
-        totalMonthlyRent: numOrNull, totalSqft: numOrNull, occupancyRate: numOrNull,
-        occupiedUnits: numOrNull, vacantUnits: numOrNull,
+        totalMonthlyRent: numOrNull, totalMarketRent: numOrNull, totalSqft: numOrNull,
+        occupancyRate: numOrNull, occupiedUnits: numOrNull, vacantUnits: numOrNull,
       },
     },
   },
@@ -112,11 +124,18 @@ Decide:
    tenantName2: when first and last names occupy TWO separate columns, map both (tenantName + tenantName2); else -1.
    If lease start and end share ONE column (e.g. "1/1/25 - 12/31/25"), give BOTH leaseStartDate and leaseEndDate that same index.
    monthlyRent for "row" layout = the actual/current lease rent column (NOT market/scheduled/budgeted rent).
+   marketRent = the market/asking/scheduled rent column when one exists (-1 when absent).
+   subsidyRent = a column showing the subsidy/HAP/Section-8 portion of the rent (-1 when absent).
+   employeeDiscount = a column with a recurring employee/manager discount (-1 when absent).
+   concession = a column with a recurring monthly concession/credit (-1 when absent).
    For "block" layout, monthlyRent is usually null (rent comes from charge rows).
-4. block (for layout="row" use {chargeDescCol:-1, chargeAmtCol:-1, rentChargeCodes:[]}; for layout="block"): chargeDescCol/chargeAmtCol = cell indices of charge description and amount on CHARGE rows, and rentChargeCodes = the exact charge-code strings whose amounts make up the unit's rent (e.g. ["rent"], ["rnt"], ["rent", "housing assistance rent"]). Include rent-subsidy codes; EXCLUDE fee codes (trash, pet, parking, amenity) and total lines.
+4. block (for layout="row" use {chargeDescCol:-1, chargeAmtCol:-1} and [] for every code list; for layout="block"): chargeDescCol/chargeAmtCol = cell indices of charge description and amount on CHARGE rows, and rentChargeCodes = the exact charge-code strings whose amounts make up the unit's rent (e.g. ["rent"], ["rnt"], ["rent", "housing assistance rent"]). Include rent-subsidy codes; EXCLUDE fee codes (trash, pet, parking, amenity) and total lines.
+   subsidyChargeCodes = the subset of rentChargeCodes that are subsidy/housing-assistance codes (also keep them in rentChargeCodes — monthlyRent stays the TOTAL contract rent).
+   employeeDiscountChargeCodes = codes for recurring employee/manager discounts (e.g. "empl", "employee discount"); NOT in rentChargeCodes.
+   concessionChargeCodes = codes for recurring concessions/credits (e.g. "conc", "concession"); NOT in rentChargeCodes.
 5. skipPatterns: lowercase substrings identifying NON-unit rows to skip when they appear in the unit-number cell or the first cells (e.g. "total", "summary", floorplan group headers).
 6. stopMarkers: lowercase substrings marking where unit data ENDS (e.g. "future residents/applicants", "summary groups", "unit type occupancy", "totals"). The walker stops at the first row containing any of these. Sections AFTER the stop (future residents, applicants, summaries) must not be extracted.
-7. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12.
+7. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current rent total; a stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
 
 If unit rows in this sheet don't share one consistent column layout, or you are unsure the mapping is exact, answer layout="unsupported" — a slower full extraction will handle it. Correctness matters more than coverage.`;
 
@@ -226,6 +245,9 @@ export function applyStructure(
   const skip = s.skipPatterns.map(p => p.toLowerCase()).filter(Boolean);
   const stops = s.stopMarkers.map(p => p.toLowerCase()).filter(Boolean);
   const rentCodes = new Set((s.block?.rentChargeCodes ?? []).map(c => c.toLowerCase().trim()));
+  const subsidyCodes = new Set((s.block?.subsidyChargeCodes ?? []).map(c => c.toLowerCase().trim()));
+  const discountCodes = new Set((s.block?.employeeDiscountChargeCodes ?? []).map(c => c.toLowerCase().trim()));
+  const concessionCodes = new Set((s.block?.concessionChargeCodes ?? []).map(c => c.toLowerCase().trim()));
 
   const units: ExtractedUnit[] = [];
   const cols = s.columns;
@@ -267,13 +289,21 @@ export function applyStructure(
     }
 
     let monthlyRent: number | null = null;
+    let subsidyRent: number | null = null;
+    let employeeDiscount: number | null = null;
+    let concession: number | null = null;
     if (s.layout === 'row') {
       monthlyRent = cols.monthlyRent !== null ? readNumber(cellValue(sheet, r, cols.monthlyRent)) : null;
+      subsidyRent = cols.subsidyRent !== null ? readNumber(cellValue(sheet, r, cols.subsidyRent)) : null;
+      employeeDiscount = cols.employeeDiscount !== null ? readNumber(cellValue(sheet, r, cols.employeeDiscount)) : null;
+      concession = cols.concession !== null ? readNumber(cellValue(sheet, r, cols.concession)) : null;
     } else {
       // block: scan charge rows (including the unit row itself) until the next
-      // unit row or a stop/skip boundary; sum amounts whose code is a rent code.
-      let sum = 0;
-      let sawRent = false;
+      // unit row or a stop/skip boundary; bucket amounts by charge-code category.
+      // Subsidy codes are a subset of rent codes (monthlyRent = total contract
+      // rent), while discounts/concessions are separate adjustments.
+      const sums = { rent: 0, subsidy: 0, discount: 0, concession: 0 };
+      const saw = { rent: false, subsidy: false, discount: false, concession: false };
       for (let cr = r; cr <= range.e.r; cr++) {
         if (cr > r) {
           if (isUnitRow(cr)) break;
@@ -282,12 +312,18 @@ export function applyStructure(
         }
         const desc = readString(cellValue(sheet, cr, s.block!.chargeDescCol!));
         const amt = readNumber(cellValue(sheet, cr, s.block!.chargeAmtCol!));
-        if (desc && amt !== null && rentCodes.has(desc.toLowerCase().trim())) {
-          sum += amt;
-          sawRent = true;
-        }
+        if (!desc || amt === null) continue;
+        const code = desc.toLowerCase().trim();
+        if (rentCodes.has(code)) { sums.rent += amt; saw.rent = true; }
+        if (subsidyCodes.has(code)) { sums.subsidy += amt; saw.subsidy = true; }
+        if (discountCodes.has(code)) { sums.discount += amt; saw.discount = true; }
+        if (concessionCodes.has(code)) { sums.concession += amt; saw.concession = true; }
       }
-      monthlyRent = sawRent ? Math.round(sum * 100) / 100 : null;
+      const cents = (n: number) => Math.round(n * 100) / 100;
+      monthlyRent = saw.rent ? cents(sums.rent) : null;
+      subsidyRent = saw.subsidy ? cents(sums.subsidy) : null;
+      employeeDiscount = saw.discount ? cents(sums.discount) : null;
+      concession = saw.concession ? cents(sums.concession) : null;
     }
 
     // No status column: vacancy is often encoded as a placeholder "tenant"
@@ -307,6 +343,10 @@ export function applyStructure(
       unitNumber,
       status,
       monthlyRent,
+      marketRent: cols.marketRent !== null ? readNumber(cellValue(sheet, r, cols.marketRent)) : null,
+      subsidyRent,
+      employeeDiscount,
+      concession,
       tenantName: tenant,
       unitSqft: cols.unitSqft !== null ? readNumber(cellValue(sheet, r, cols.unitSqft)) : null,
       unitType: cols.unitType !== null ? readString(cellValue(sheet, r, cols.unitType)) : null,
@@ -334,8 +374,8 @@ export function applyStructure(
     propertyName: null,
     statedTotalUnits: s.statedTotalUnits ?? null,
     statedSummary: s.statedSummary ?? {
-      totalMonthlyRent: null, totalSqft: null, occupancyRate: null,
-      occupiedUnits: null, vacantUnits: null,
+      totalMonthlyRent: null, totalMarketRent: null, totalSqft: null,
+      occupancyRate: null, occupiedUnits: null, vacantUnits: null,
     },
     units: [...byUnit.values()],
   };

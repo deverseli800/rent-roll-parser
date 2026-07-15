@@ -33,6 +33,15 @@ export interface MVPUnit {
   monthlyRent: number | null;
   tenantName: string | null;
 
+  // Rent components (optional: records processed before these fields exist
+  // without them). monthlyRent is the TOTAL contract rent (tenant + subsidy);
+  // subsidyRent is the portion paid by a housing-assistance program, so
+  // tenant-paid = monthlyRent - subsidyRent.
+  marketRent?: number | null;        // Market/asking rent for the unit
+  subsidyRent?: number | null;       // Subsidy/HAP portion of monthlyRent
+  employeeDiscount?: number | null;  // Recurring employee/other discount (negative as shown)
+  concession?: number | null;        // Recurring concession amount (negative as shown)
+
   // Additional fields (all optional)
   unitSqft: number | null;
   unitType: string | null;           // e.g., "1BR/1BA", "Studio", "2BR/2BA"
@@ -109,6 +118,13 @@ export interface SummaryStats {
   // totalMonthlyRent (occupied+notice only) deliberately excludes.
   // Optional: records processed before this field exist without it.
   nonTenantRent?: number | null;
+  // Rent-component totals (optional: records processed before these fields
+  // exist without them; null when no unit carries the component).
+  totalMarketRent?: number | null;       // All units with a market rent
+  totalSubsidyRent?: number | null;      // Subsidy portion across rent-paying units
+  totalTenantPaidRent?: number | null;   // totalMonthlyRent minus subsidy
+  totalEmployeeDiscount?: number | null; // Sum of recurring employee/other discounts
+  totalConcessions?: number | null;      // Sum of recurring concessions
   averageRent: number | null;
   averageSqft: number | null;
   averageRentPerSqft: number | null;
@@ -123,6 +139,9 @@ export interface SummaryStats {
 export interface StatedSummaryStats {
   totalUnits: number | null;
   totalMonthlyRent: number | null;
+  // Market/potential rent total when the document states one separately from
+  // the actual-rent total (optional: older records don't have it).
+  totalMarketRent?: number | null;
   totalSqft: number | null;
   occupancyRate: number | null;      // Percentage if stated in document
   occupiedUnits: number | null;

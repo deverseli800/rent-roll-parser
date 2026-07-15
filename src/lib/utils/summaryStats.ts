@@ -53,6 +53,22 @@ export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
 
   const nonTenantRent = nonTenantRentFromUnits(units);
 
+  // Rent-component totals. Null (not 0) when no unit carries the component, so
+  // documents without these columns don't display misleading zeros.
+  const sumOrNull = (vals: (number | null | undefined)[]): number | null => {
+    const present = vals.filter((v): v is number => v !== null && v !== undefined);
+    return present.length > 0 ? Math.round(present.reduce((a, b) => a + b, 0) * 100) / 100 : null;
+  };
+  // Market rent applies to every unit (including vacant) — that's what makes it
+  // comparable to a document's gross-potential total.
+  const totalMarketRent = sumOrNull(units.map(u => u.marketRent));
+  const totalSubsidyRent = sumOrNull(rentPayingUnits.map(u => u.subsidyRent));
+  const totalTenantPaidRent = totalMonthlyRent !== null
+    ? Math.round((totalMonthlyRent - (totalSubsidyRent ?? 0)) * 100) / 100
+    : null;
+  const totalEmployeeDiscount = sumOrNull(units.map(u => u.employeeDiscount));
+  const totalConcessions = sumOrNull(units.map(u => u.concession));
+
   // Average rent (only for rent-paying units)
   const averageRent = rentPayingUnits.length > 0 && totalMonthlyRent !== null
     ? Math.round(totalMonthlyRent / rentPayingUnits.length)
@@ -103,6 +119,11 @@ export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
     totalSqft,
     totalMonthlyRent,
     nonTenantRent,
+    totalMarketRent,
+    totalSubsidyRent,
+    totalTenantPaidRent,
+    totalEmployeeDiscount,
+    totalConcessions,
     averageRent,
     averageSqft,
     averageRentPerSqft,

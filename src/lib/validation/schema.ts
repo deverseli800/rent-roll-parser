@@ -16,6 +16,11 @@ export const MVPUnitSchema = z.object({
   status: UnitStatusSchema,
   monthlyRent: z.number().nullable(),
   tenantName: z.string().nullable(),
+  // Rent components (optional: older records don't have them)
+  marketRent: z.number().nullable().optional(),
+  subsidyRent: z.number().nullable().optional(),
+  employeeDiscount: z.number().nullable().optional(),
+  concession: z.number().nullable().optional(),
   // Additional fields
   unitSqft: z.number().nullable(),
   unitType: z.string().nullable(),
@@ -48,6 +53,11 @@ export const SummaryStatsSchema = z.object({
   physicalOccupancy: z.number().nullable(),
   totalSqft: z.number().nullable(),
   totalMonthlyRent: z.number().nullable(),
+  totalMarketRent: z.number().nullable().optional(),
+  totalSubsidyRent: z.number().nullable().optional(),
+  totalTenantPaidRent: z.number().nullable().optional(),
+  totalEmployeeDiscount: z.number().nullable().optional(),
+  totalConcessions: z.number().nullable().optional(),
   averageRent: z.number().nullable(),
   averageSqft: z.number().nullable(),
   averageRentPerSqft: z.number().nullable(),
@@ -57,6 +67,7 @@ export const SummaryStatsSchema = z.object({
 export const StatedSummaryStatsSchema = z.object({
   totalUnits: z.number().nullable(),
   totalMonthlyRent: z.number().nullable(),
+  totalMarketRent: z.number().nullable().optional(),
   totalSqft: z.number().nullable(),
   occupancyRate: z.number().nullable(),
   occupiedUnits: z.number().nullable(),

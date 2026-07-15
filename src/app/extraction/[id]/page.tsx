@@ -66,6 +66,20 @@ import * as XLSX from 'xlsx';
 // Register AG Grid modules
 ModuleRegistry.registerModules([AllCommunityModule]);
 
+// Shared cell formatting for currency columns (rent components)
+const currencyFormatter = (params: { value?: number | null }) => {
+  if (params.value == null) return '';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+  }).format(params.value);
+};
+const currencyParser = (params: { newValue?: unknown }) => {
+  const val = Number(String(params.newValue).replace(/[$,]/g, ''));
+  return isNaN(val) ? null : val;
+};
+
 const STATUS_OPTIONS: { value: UnitStatus; label: string }[] = [
   { value: 'occupied', label: 'Occupied' },
   { value: 'vacant', label: 'Vacant' },
@@ -830,6 +844,7 @@ function SummaryStatsCard({
 
   const hasStatedStats = statedStats && (
     statedStats.totalMonthlyRent !== null ||
+    (statedStats.totalMarketRent ?? null) !== null ||
     statedStats.totalSqft !== null ||
     statedStats.occupancyRate !== null ||
     statedStats.occupiedUnits !== null ||
@@ -886,6 +901,14 @@ function SummaryStatsCard({
               matchOverride={rentReconciliation?.ok}
               note={rentReconciliation && !rentReconciliation.exact ? rentReconciliation.explanation : undefined}
             />
+            {(statedStats?.totalMarketRent ?? null) !== null && (
+              <ComparisonValue
+                label="Total Market Rent"
+                stated={statedStats?.totalMarketRent ?? null}
+                calculated={stats.totalMarketRent ?? null}
+                format="currency"
+              />
+            )}
             <ComparisonValue
               label="Total Sqft"
               stated={statedStats?.totalSqft ?? null}
@@ -956,6 +979,36 @@ function SummaryStatsCard({
           <Text size="sm" c="dimmed">Total Monthly Rent</Text>
           <Text size="lg" fw={600}>{formatCurrency(stats.totalMonthlyRent)}</Text>
         </div>
+        {(stats.totalMarketRent ?? null) !== null && (
+          <div>
+            <Text size="sm" c="dimmed">Total Market Rent</Text>
+            <Text size="lg" fw={600}>{formatCurrency(stats.totalMarketRent ?? null)}</Text>
+          </div>
+        )}
+        {(stats.totalSubsidyRent ?? null) !== null && (
+          <>
+            <div>
+              <Text size="sm" c="dimmed">Subsidy</Text>
+              <Text size="lg" fw={600}>{formatCurrency(stats.totalSubsidyRent ?? null)}</Text>
+            </div>
+            <div>
+              <Text size="sm" c="dimmed">Tenant-Paid Rent</Text>
+              <Text size="lg" fw={600}>{formatCurrency(stats.totalTenantPaidRent ?? null)}</Text>
+            </div>
+          </>
+        )}
+        {(stats.totalEmployeeDiscount ?? null) !== null && (
+          <div>
+            <Text size="sm" c="dimmed">Employee Discounts</Text>
+            <Text size="lg" fw={600}>{formatCurrency(stats.totalEmployeeDiscount ?? null)}</Text>
+          </div>
+        )}
+        {(stats.totalConcessions ?? null) !== null && (
+          <div>
+            <Text size="sm" c="dimmed">Concessions</Text>
+            <Text size="lg" fw={600}>{formatCurrency(stats.totalConcessions ?? null)}</Text>
+          </div>
+        )}
         <div>
           <Text size="sm" c="dimmed">Avg Rent</Text>
           <Text size="lg" fw={600}>{formatCurrency(stats.averageRent)}</Text>
@@ -1246,6 +1299,10 @@ export default function ExtractionPage() {
       'Type': unit.unitType || '',
       'Sqft': unit.unitSqft || '',
       'Monthly Rent': unit.monthlyRent || '',
+      'Market Rent': unit.marketRent ?? '',
+      'Subsidy': unit.subsidyRent ?? '',
+      'Employee Discount': unit.employeeDiscount ?? '',
+      'Concession': unit.concession ?? '',
       'Tenant': unit.tenantName || '',
       'Lease Start': unit.leaseStartDate || '',
       'Lease End': unit.leaseEndDate || '',
@@ -1280,7 +1337,7 @@ export default function ExtractionPage() {
 
   // Detect which optional columns have data
   const columnsWithData = useMemo(() => {
-    const optionalFields = ['unitType', 'unitSqft', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
+    const optionalFields = ['unitType', 'unitSqft', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
     const hasData: Record<string, boolean> = {};
 
     for (const field of optionalFields) {
@@ -1546,6 +1603,42 @@ export default function ExtractionPage() {
         },
         cellStyle: (params) => getCellStyle(params.node?.rowIndex, 'monthlyRent'),
         tooltipValueGetter: (params) => getHighlightTooltip(params.node?.rowIndex, 'monthlyRent'),
+      },
+      {
+        field: 'marketRent',
+        headerName: 'Market Rent',
+        width: 120,
+        editable: true,
+        type: 'numericColumn',
+        valueFormatter: currencyFormatter,
+        valueParser: currencyParser,
+      },
+      {
+        field: 'subsidyRent',
+        headerName: 'Subsidy',
+        width: 110,
+        editable: true,
+        type: 'numericColumn',
+        valueFormatter: currencyFormatter,
+        valueParser: currencyParser,
+      },
+      {
+        field: 'employeeDiscount',
+        headerName: 'Empl. Discount',
+        width: 130,
+        editable: true,
+        type: 'numericColumn',
+        valueFormatter: currencyFormatter,
+        valueParser: currencyParser,
+      },
+      {
+        field: 'concession',
+        headerName: 'Concession',
+        width: 120,
+        editable: true,
+        type: 'numericColumn',
+        valueFormatter: currencyFormatter,
+        valueParser: currencyParser,
       },
       {
         field: 'tenantName',

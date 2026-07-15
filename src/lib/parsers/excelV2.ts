@@ -419,6 +419,7 @@ function mergeStated(results: ExtractionResult[]): {
   const stats: StatedSummaryStats = {
     totalUnits: statedTotalUnits,
     totalMonthlyRent: sumOrNull(results.map(r => r.statedSummary?.totalMonthlyRent ?? null)),
+    totalMarketRent: sumOrNull(results.map(r => r.statedSummary?.totalMarketRent ?? null)),
     totalSqft: sumOrNull(results.map(r => r.statedSummary?.totalSqft ?? null)),
     occupancyRate: null, // averaging percentages across buildings is not meaningful
     occupiedUnits: sumOrNull(results.map(r => r.statedSummary?.occupiedUnits ?? null)),
