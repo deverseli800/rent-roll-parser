@@ -403,6 +403,7 @@ function UnitCountCard({ extraction }: { extraction: RentRollExtraction }) {
 const EVENT_STYLE: Record<ProgressEvent['kind'], { color: string; icon: ReactNode }> = {
   info:        { color: 'gray',   icon: <IconInfoCircle size={13} /> },
   fastpath:    { color: 'blue',   icon: <IconBolt size={13} /> },
+  preview:     { color: 'teal',   icon: <IconSparkles size={13} /> },
   attempt:     { color: 'blue',   icon: <IconCpu size={13} /> },
   verify_pass: { color: 'green',  icon: <IconCircleCheck size={13} /> },
   verify_fail: { color: 'red',    icon: <IconAlertTriangle size={13} /> },
@@ -523,6 +524,49 @@ function StageRail({ stage }: { stage: string }) {
 }
 
 /**
+ * The document's own stated totals, read by a quick first AI pass and written
+ * to the record within seconds of upload — shown while the full unit-level
+ * extraction (minutes for large documents) is still running.
+ */
+function StatedPreviewCard({ extraction }: { extraction: RentRollExtraction }) {
+  const s = extraction.statedSummaryStats;
+  const unitCount = extraction.statedUnitCount ?? s?.totalUnits ?? null;
+  if (!s && unitCount === null) return null;
+
+  const stats: { label: string; value: string }[] = [];
+  if (unitCount !== null) stats.push({ label: 'Total Units', value: unitCount.toLocaleString('en-US') });
+  if (s?.occupancyRate != null) stats.push({ label: 'Occupancy', value: `${s.occupancyRate.toFixed(1)}%` });
+  if (s?.occupiedUnits != null) stats.push({ label: 'Occupied', value: s.occupiedUnits.toLocaleString('en-US') });
+  if (s?.vacantUnits != null) stats.push({ label: 'Vacant', value: s.vacantUnits.toLocaleString('en-US') });
+  if (s?.totalMonthlyRent != null) stats.push({ label: 'Monthly Rent', value: `$${Math.round(s.totalMonthlyRent).toLocaleString('en-US')}` });
+  if (s?.totalSqft != null) stats.push({ label: 'Total Sqft', value: Math.round(s.totalSqft).toLocaleString('en-US') });
+  if (stats.length === 0) return null;
+
+  return (
+    <Paper withBorder radius="lg" p="md">
+      <Group gap="xs" mb="sm">
+        <IconSparkles size={18} color="var(--mantine-color-teal-6)" />
+        <Text fw={600} size="sm">
+          From the document&apos;s summary{extraction.propertyName ? ` — ${extraction.propertyName}` : ''}
+        </Text>
+        <Badge size="xs" color="teal" variant="light">quick first pass</Badge>
+      </Group>
+      <SimpleGrid cols={{ base: 3, sm: Math.min(stats.length, 6) }} spacing="md">
+        {stats.map(({ label, value }) => (
+          <div key={label}>
+            <Text size="xs" c="dimmed">{label}</Text>
+            <Text size="lg" fw={700}>{value}</Text>
+          </div>
+        ))}
+      </SimpleGrid>
+      <Text size="xs" c="dimmed" mt="sm">
+        These are the totals the document states about itself — each unit is now being extracted and will be verified against them.
+      </Text>
+    </Paper>
+  );
+}
+
+/**
  * Live extraction console: compact status header (pulsing dot, phase, ticking
  * elapsed), pipeline stage rail, then the newest-first event feed as the
  * dominant element — the latest event is always visible without scrolling.
@@ -563,6 +607,9 @@ function ProcessingView({ extraction, onBack }: { extraction: RentRollExtraction
             <Text c="dimmed" size="sm">Extraction in progress — you can leave; processing continues on the server</Text>
           </div>
         </Group>
+
+        {/* Stated totals from the quick first pass, while units extract */}
+        <StatedPreviewCard extraction={extraction} />
 
         <Paper withBorder radius="lg" style={{ overflow: 'hidden' }}>
           {/* Live status header */}

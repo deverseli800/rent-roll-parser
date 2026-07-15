@@ -23,6 +23,10 @@ export interface AIUsage {
   modelUsed: string;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens written to the prompt cache this call (billed ~1.25x input price). */
+  cacheCreationInputTokens?: number;
+  /** Tokens served from the prompt cache this call (billed ~0.1x input price). */
+  cacheReadInputTokens?: number;
 }
 
 export interface StreamProgress {
@@ -140,6 +144,8 @@ export async function extractStructured<T>(options: {
       modelUsed: message.model,
       inputTokens: message.usage.input_tokens,
       outputTokens: message.usage.output_tokens,
+      cacheCreationInputTokens: message.usage.cache_creation_input_tokens ?? 0,
+      cacheReadInputTokens: message.usage.cache_read_input_tokens ?? 0,
     },
   };
 }

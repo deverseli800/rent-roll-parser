@@ -4,12 +4,14 @@ import { extractStructured, MODELS, sumUsage, type AIUsage } from './aiClient';
 import { tryFastPath } from './excelFastPath';
 import {
   EXTRACTION_RULES,
+  extractStatedPreview,
   runExtractionLadder,
   toMVPUnits,
   toStatedSummaryStats,
   type ExtractionResult,
   type ProgressReporter,
 } from './extractionCore';
+import type Anthropic from '@anthropic-ai/sdk';
 
 /**
  * Excel parser v2.
@@ -26,6 +28,10 @@ import {
 
 const MAX_COLS = 80; // hard ceiling; actual width adapts to populated columns
 const MAX_ROWS_PER_CALL = 6000;
+// Sheets below this size skip the stated-summary preview pass: extraction is
+// fast enough that early feedback adds little, and the grid may fall under the
+// prompt-cache minimum (making the extra call cost 2x instead of ~1.35x).
+const PREVIEW_MIN_ROWS = 150;
 
 /** Find the last column that actually holds data (sheets often claim huge ranges). */
 function lastPopulatedCol(sheet: XLSX.WorkSheet, range: XLSX.Range): number {
@@ -232,18 +238,30 @@ async function extractSheet(
     message: `Fast path not viable for "${info.name}" (layout unsupported or totals didn't reconcile) — using the AI model ladder`,
   });
 
-  const basePrompt = `${EXTRACTION_RULES}${detectColumnHints(info.text)}
+  // The sheet grid leads and is cache-marked: the stated-summary preview call
+  // writes it into the prompt cache; the full extraction (and same-model
+  // retries with feedback) read it at ~0.1x input price.
+  const docBlocks: Anthropic.ContentBlockParam[] = [
+    {
+      type: 'text',
+      text: `Below is the full content of Excel sheet "${info.name}" from a rent roll workbook (cells separated by " | ", rows prefixed with their row number):\n\n${info.text}`,
+      cache_control: { type: 'ephemeral' },
+    },
+  ];
+  const instructions = `${EXTRACTION_RULES}${detectColumnHints(info.text)}`;
+  const makeContent = (feedback?: string): Anthropic.ContentBlockParam[] => [
+    ...docBlocks,
+    { type: 'text', text: feedback ? `${instructions}\n\n${feedback}` : instructions },
+  ];
 
-Below is the full content of Excel sheet "${info.name}" (cells separated by " | ", rows prefixed with their row number):
+  // Quick stated-summary read before the (slow) full extraction, so the UI has
+  // the document's own totals within seconds. Skipped for small sheets, which
+  // extract quickly anyway and sit below the prompt-cache minimum.
+  if (info.rows >= PREVIEW_MIN_ROWS) {
+    await extractStatedPreview(docBlocks, usages, report, `sheet "${info.name}"`);
+  }
 
-${info.text}`;
-
-  const result = await runExtractionLadder(
-    feedback => [{ type: 'text', text: feedback ? `${basePrompt}\n\n${feedback}` : basePrompt }],
-    usages,
-    report,
-    `sheet "${info.name}"`
-  );
+  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`);
   return { result, usage: usages, path: 'ai' };
 }
 

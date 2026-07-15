@@ -4,6 +4,7 @@ import { runVerificationChecks } from '../validation/verification';
 import { explainMismatches } from '../validation/explainer';
 import { calculateSummaryStats } from '../utils/summaryStats';
 import { updateServerExtraction } from './extractionStore';
+import type { ProgressReporter } from '../parsers/extractionCore';
 import type { ProgressEvent } from '../types';
 
 // Timeline safety cap — a pathological document can't grow the record unboundedly.
@@ -28,10 +29,20 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
   let lastStage = '';
   let lastDetail: string | null = null;
   const events: ProgressEvent[] = [];
-  const report = (stage: string, detail?: string, event?: Pick<ProgressEvent, 'kind' | 'message'>) => {
+  const report: ProgressReporter = (stage, detail, event) => {
     const now = Date.now();
     if (event && events.length < MAX_EVENTS) {
-      events.push({ ...event, at: new Date().toISOString() });
+      events.push({ kind: event.kind, message: event.message, at: new Date().toISOString() });
+    }
+    // A stated-summary preview arrived (quick first AI pass) — write the
+    // document's own totals to the record immediately so the UI can show them
+    // while the full unit extraction is still running.
+    if (event?.preview) {
+      updateServerExtraction(id, {
+        propertyName: event.preview.propertyName,
+        statedUnitCount: event.preview.statedUnitCount,
+        statedSummaryStats: event.preview.statedSummaryStats,
+      });
     }
     if (!event && stage === lastStage && now - lastWrite < 1000) return;
     lastWrite = now;
