@@ -1,182 +1,130 @@
 # Rent Roll Parser
 
-A web application that extracts structured data from multifamily real estate rent rolls using AI. Upload Excel or PDF rent rolls and get clean, validated JSON data with unit-level details.
+An AI-powered pipeline that turns multifamily rent rolls (Excel or PDF, digital or scanned) into clean, validated, unit-level JSON. Upload a document, and the system extracts every unit with its rent, status, tenant, dates, and rent components, then verifies the extraction against the totals the document states about itself.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+Built with Next.js and the Anthropic Claude API. Includes a web app with a live progress view and review grid, a CLI for scripting, and a ground-truthed evaluation harness (46 real rent rolls, 99%+ macro-average field accuracy).
 
-## Features
+## What it extracts
 
-- **Multi-format Support**: Parse both Excel (.xlsx, .xls) and PDF rent rolls
-- **AI-Powered Extraction**: Uses Claude AI for intelligent document understanding
-- **Validation & Cross-checking**: Compares extracted data against stated totals in documents
-- **Interactive Review UI**: Edit extracted data with an Excel-like grid interface
-- **Export Options**: Export to JSON or Excel formats
-- **Local Storage**: All data stored locally in JSON files
+| Field | Notes |
+|-------|-------|
+| Unit number | Exactly as displayed, including prefixes and suffixes |
+| Status | occupied, vacant, notice, model, down, applicant (normalized from dozens of vendor spellings) |
+| Monthly rent | The actual in-place rent charge, not charge totals or market rent |
+| Market rent | Asking or scheduled rent when the document shows it |
+| Subsidy rent | Section 8 / HAP portion when shown separately |
+| Employee discount, concessions | Recurring credits, sign preserved |
+| Tenant name, unit type, square footage | As displayed |
+| Lease start/end, move-in/move-out dates | Normalized to ISO dates |
 
-## How It Works
+It also captures the summary totals the document states about itself (total units, occupancy, total rent and sqft), which power the verification step.
 
-1. **Upload** - Drag and drop or select a rent roll file (Excel or PDF)
-2. **Extract** - AI analyzes the document and extracts unit-level data
-3. **Validate** - System cross-checks extracted values against stated totals
-4. **Review** - Edit any discrepancies in the interactive table
-5. **Export** - Download the validated data as JSON or Excel
+## How the pipeline works
 
-### Extracted Fields
+1. **Read.** Excel workbooks are read in full, every sheet, with date formats resolved. Sheets are triaged (heuristics plus AI for ambiguous workbooks) so only unit-level rent roll sheets are extracted. PDFs go to Claude vision, so scans work as well as digital PDFs.
+2. **Fast path.** Standard tabular layouts are read deterministically (structure mapping plus a code walk over the cells) with no per-unit AI call. The result only counts if it reconciles against the document's stated totals; otherwise the AI ladder takes over.
+3. **Quick preview.** A fast first pass reads just the document's stated summary (unit count, occupancy, total rent) so the UI shows something within seconds. The document is written to the prompt cache here, making the passes that follow much cheaper.
+4. **Full extraction with a model ladder.** Claude Sonnet 5 extracts every unit using structured outputs (guaranteed-valid JSON). The result is self-verified against the stated totals. On a verification failure, the parser escalates to Claude Opus 4.8 with feedback about what went wrong, and then to Claude Fable 5. When a document states no totals to verify against, a second model independently extracts and the results are compared.
+5. **Chunking for very large documents.** A 400+ unit document produces more JSON than one model response can hold. The parser detects this (proactively from the stated unit count, or reactively when output truncates) and re-extracts in parallel row-range or page-range chunks with the same model, merges them in document order, and verifies the merged result as one document. Truncation never triggers model escalation, because a stronger model cannot fix a too-much-output problem.
+6. **Validate and explain.** The finished extraction gets summary statistics, Zod validation, verification checks (stated vs calculated totals, duplicates, gaps, suspicious patterns), and AI-written explanations for any mismatches.
 
-| Field | Description |
-|-------|-------------|
-| Unit Number | Unit identifier (e.g., "101", "A-201") |
-| Status | Occupied, Vacant, Notice, Model, Down, Applicant |
-| Monthly Rent | Primary rent amount |
-| Tenant Name | Resident name (if occupied) |
-| Unit Type | Floorplan (e.g., "1BR/1BA", "Studio") |
-| Square Footage | Unit size |
-| Lease Dates | Start/end dates |
-| Move-in/out Dates | Tenant move dates |
+Every AI call streams, reports live progress, and records token usage, so each run comes with a cache-aware cost estimate.
 
-### Validation Checks
+## Quick start
 
-- Unit count verification (stated vs extracted)
-- Duplicate unit detection
-- Gap detection in sequential unit numbers
-- Summary stat comparison (total rent, sqft, occupancy)
-- Suspicious pattern flagging
+Requirements: Node.js 20.17+ and an [Anthropic API key](https://console.anthropic.com/).
 
-## Prerequisites
-
-- Node.js 20.17+ or 22.9+
-- npm or yarn
-- [Anthropic API key](https://console.anthropic.com/) for Claude AI
-
-## Installation
-
-1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/rent-roll-parser.git
+git clone https://github.com/deverseli800/rent-roll-parser.git
 cd rent-roll-parser
-```
-
-2. Install dependencies:
-```bash
 npm install
-```
-
-3. Create environment file:
-```bash
-cp .env.example .env.local
-```
-
-4. Add your Anthropic API key to `.env.local`:
-```
-ANTHROPIC_API_KEY=your-api-key-here
-```
-
-## Usage
-
-### Development
-
-```bash
+cp .env.example .env.local   # then put your ANTHROPIC_API_KEY in .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000), drop in a rent roll, and watch the extraction timeline. Small documents finish in under a minute; large documents (300+ units) take 10 to 25 minutes and show live per-model, per-chunk progress the whole way. When extraction completes, review and edit the results in the grid, then approve.
 
-### Production
+For production: `npm run build && npm start`.
+
+## CLI
+
+The same pipeline runs outside the web app:
 
 ```bash
-npm run build
-npm start
+npx tsx scripts/parse-rent-roll.ts <file.xlsx|file.pdf> [--out <path>] [--json]
 ```
 
-## Project Structure
+- `--out <path>` writes the full extraction JSON (default: `<file>.extraction.json` next to the input)
+- `--json` prints the full JSON to stdout instead of a human-readable summary
+- Progress streams to stderr; exits non-zero on failure
 
-```
-rent-roll-parser/
-├── src/
-│   ├── app/                    # Next.js app router
-│   │   ├── api/               # API routes
-│   │   │   ├── upload/        # File upload endpoint
-│   │   │   ├── extraction/    # Get/update extractions
-│   │   │   └── extractions/   # List extractions
-│   │   ├── extraction/[id]/   # Review/edit page
-│   │   └── page.tsx           # Upload page
-│   ├── components/            # React components
-│   │   ├── FileUpload.tsx     # Drag-drop uploader
-│   │   ├── ExtractionList.tsx # Previous extractions
-│   │   └── AppHeader.tsx      # Navigation header
-│   └── lib/
-│       ├── parsers/           # Excel & PDF parsing
-│       ├── validation/        # Data validation
-│       ├── storage.ts         # JSON file storage
-│       └── types.ts           # TypeScript interfaces
-├── data/
-│   └── extractions/           # Stored extraction JSON files
-└── public/                    # Static assets
-```
+## HTTP API
 
-## Supported Rent Roll Formats
-
-The parser handles various property management software exports:
-
-- **OneSite / RealPage** - Multi-charge format with status codes
-- **ResMan** - Clean tabular format
-- **Yardi** - Standard export format
-- **Generic Excel** - Column name fuzzy matching
-
-## Tech Stack
-
-- **Framework**: [Next.js 16](https://nextjs.org/) (App Router)
-- **UI**: [Mantine v8](https://mantine.dev/)
-- **Data Grid**: [AG Grid](https://www.ag-grid.com/)
-- **AI**: [Anthropic Claude](https://www.anthropic.com/) (Sonnet 4 / Opus 4.5)
-- **Excel Parsing**: [SheetJS](https://sheetjs.com/)
-- **Validation**: [Zod](https://zod.dev/)
-
-## API Usage
-
-### Upload File
 ```bash
-curl -X POST http://localhost:3000/api/upload \
-  -F "file=@rent-roll.xlsx"
-```
+# Upload (returns 202 immediately; extraction runs as a background job)
+curl -X POST http://localhost:3000/api/upload -F "file=@rent-roll.xlsx"
 
-### Get Extraction
-```bash
+# Poll for status/result (the web app polls this every 2.5s)
 curl http://localhost:3000/api/extraction/{id}
 ```
 
-### List Extractions
+While processing, the response carries the live progress timeline (stage, current model and attempt, units streamed so far). On completion it carries the units, summary stats, validation results, and verification checks.
+
+## Accuracy and evaluation
+
+A ground-truthed eval corpus of 46 real rent rolls (OneSite/RealPage, Yardi, ResMan, AppFolio, proformas, scanned PDFs, commercial/residential mixes) lives in `eval/`. The scorer aligns extracted units to ground truth and reports per-field accuracy, missed units, and hallucinated units.
+
 ```bash
-curl http://localhost:3000/api/extractions
+npx tsx eval/run-eval.ts              # parse (cached) + score all files
+npx tsx eval/run-eval.ts --cached     # rescore existing outputs, no API calls
+npx tsx eval/run-eval.ts --set core   # 16-file representative set
+npx tsx eval/run-eval.ts --set smoke  # 5-file sanity check
 ```
 
-### Export to Excel
-```bash
-curl http://localhost:3000/api/extraction/{id}/export -o export.xlsx
+Current results: 99%+ macro-average field accuracy with zero missed and zero hallucinated units across the corpus. Reports land in `eval/runs/latest/REPORT.md`.
+
+## Cost
+
+Extraction uses the Claude API. Rough per-document costs:
+
+- Small documents (under ~50 units): a few cents, and often near-free when the deterministic fast path handles them
+- Mid-size documents: $0.10 to $1.00
+- Large documents that need full AI extraction (300+ units): $2 to $6, kept down by prompt caching across the preview, extraction, and chunk calls
+
+The app shows a cost estimate for every run.
+
+## Project structure
+
+```
+src/
+├── app/                     # Next.js app router
+│   ├── api/upload/          # Async upload endpoint (202 + background job)
+│   ├── api/extraction/[id]/ # Status/result polling
+│   ├── extraction/[id]/     # Live progress + review/edit UI
+│   └── page.tsx             # Upload page
+├── components/              # Upload, grid, timeline components
+└── lib/
+    ├── parsers/
+    │   ├── extractionCore.ts  # Shared rules, schema, verification, model ladder, chunking
+    │   ├── excelV2.ts         # Sheet reading, triage, per-sheet extraction
+    │   ├── excelFastPath.ts   # Deterministic reader for standard layouts
+    │   ├── pdfV2.ts           # Vision extraction
+    │   └── aiClient.ts        # Streaming structured-output client
+    ├── validation/            # Zod schemas, verification checks, mismatch explainer
+    ├── server/                # Background job runner
+    └── types.ts
+scripts/parse-rent-roll.ts   # CLI entry point
+eval/                        # Ground-truthed evaluation harness
+data/extractions/            # Extraction records (local JSON)
 ```
 
-## Configuration
+## Tech stack
 
-| Environment Variable | Description | Required |
-|---------------------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Claude API key for AI extraction | Yes |
-
-## Cost Considerations
-
-PDF parsing uses Claude AI which has associated costs:
-- **Claude Sonnet 4**: ~$3/million input tokens, ~$15/million output tokens
-- **Claude Opus 4.5**: ~$15/million input tokens, ~$75/million output tokens
-
-A typical rent roll (10-50 pages) costs $0.10-$1.00 to process.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- [Next.js 16](https://nextjs.org/) (App Router)
+- [Anthropic Claude API](https://www.anthropic.com/): Sonnet 5, Opus 4.8, and Fable 5 with structured outputs, streaming, and prompt caching
+- [Mantine v8](https://mantine.dev/) UI, [AG Grid](https://www.ag-grid.com/) review table
+- [SheetJS](https://sheetjs.com/) Excel parsing, [Zod](https://zod.dev/) validation
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-Built with [Claude Code](https://claude.ai/claude-code) by Anthropic.
+MIT. See [LICENSE](LICENSE).
