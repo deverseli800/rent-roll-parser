@@ -39,6 +39,18 @@ export interface StreamProgress {
 /** Called during streaming with cumulative progress (throttled). */
 export type StreamHeartbeat = (progress: StreamProgress) => void;
 
+/**
+ * Output truncated at max_tokens. Distinguished from other failures because
+ * escalating the model can never fix it (a stronger model emits the same
+ * volume of JSON) — the caller must chunk the extraction instead.
+ */
+export class MaxTokensError extends Error {
+  constructor(model: string, maxTokens: number) {
+    super(`Model ${model} hit max_tokens (${maxTokens}) — output truncated`);
+    this.name = 'MaxTokensError';
+  }
+}
+
 let _client: Anthropic | null = null;
 
 export function getClient(): Anthropic {
@@ -67,7 +79,8 @@ export async function extractStructured<T>(options: {
   itemToken?: string;
 }): Promise<{ data: T; usage: AIUsage }> {
   const client = getClient();
-  const { model, content, schema, maxTokens = 110000, onHeartbeat, itemToken } = options;
+  // 128000 is the output ceiling for every model in the ladder.
+  const { model, content, schema, maxTokens = 128000, onHeartbeat, itemToken } = options;
 
   const params: Anthropic.MessageCreateParamsStreaming = {
     model,
@@ -127,7 +140,7 @@ export async function extractStructured<T>(options: {
     throw new Error(`Model ${model} refused the request`);
   }
   if (message.stop_reason === 'max_tokens') {
-    throw new Error(`Model ${model} hit max_tokens (${maxTokens}) — output truncated`);
+    throw new MaxTokensError(model, maxTokens);
   }
 
   const textBlock = message.content.find(
