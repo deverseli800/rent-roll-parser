@@ -29,10 +29,15 @@ const ENTRY = path.join(ROOT, 'scripts', 'parse-rent-roll.ts');
 const SKILL_NAME = 'parse-rent-roll';
 const SKILL_SRC = path.join(ROOT, '.claude', 'skills', SKILL_NAME, 'SKILL.md');
 
+// `--with-key` embeds the repo's .env.local into the bundle so the key travels
+// with the skill (for sandboxes with no secrets UI). Produces a *private* zip.
+const WITH_KEY = process.argv.slice(2).includes('--with-key');
+const REPO_ENV = path.join(ROOT, '.env.local');
+
 const DIST = path.join(ROOT, 'dist');
 const STAGE = path.join(DIST, 'skill');
 const BUNDLE = path.join(STAGE, SKILL_NAME);
-const ZIP = path.join(DIST, `${SKILL_NAME}-skill.zip`);
+const ZIP = path.join(DIST, `${SKILL_NAME}-skill${WITH_KEY ? '-private' : ''}.zip`);
 
 const NODE_BUILTINS = new Set([
   'assert', 'buffer', 'child_process', 'cluster', 'console', 'constants',
@@ -185,6 +190,20 @@ summary stats → validation → verification checks → mismatch explanations) 
 rent roll file and report the results. This bundle is self-contained — it does
 not depend on the rent-roll-parser web app.
 
+## Requires an ANTHROPIC_API_KEY — do not work around it
+
+This skill only works with a valid \`ANTHROPIC_API_KEY\`; it calls the Anthropic
+API to extract and verify the data. Before running, confirm a key is available
+(an env var, or a \`.env.local\` file in this directory).
+
+**If no key is available, STOP and ask the user to provide one. Do NOT read the
+spreadsheet or PDF yourself as a substitute.** A manual/structural read of the
+file bypasses the AI extraction, the model-escalation ladder, and the
+verification checks that are the entire point of this skill — it silently
+degrades accuracy on non-trivial Excel files and cannot handle PDFs or scans at
+all. Report the missing key plainly and wait for it rather than producing an
+unverified hand-parsed result.
+
 ## Setup (first run only)
 
 From this skill's directory:
@@ -193,9 +212,9 @@ From this skill's directory:
 npm install
 \`\`\`
 
-The pipeline calls the Anthropic API, so an \`ANTHROPIC_API_KEY\` must be
-available — either exported in the environment, or placed in a \`.env.local\`
-file in this directory (copy \`.env.local.example\`).
+If the key is not already in the environment, copy \`.env.local.example\` to
+\`.env.local\` and fill in \`ANTHROPIC_API_KEY\` (a \`.env.local\` may already be
+present if this bundle was exported with the key embedded).
 
 ## Running it
 
@@ -238,7 +257,8 @@ count), status breakdown, occupancy, total rent, and the verification verdict
   the \`.extraction.json\` file (fields: unitNumber, status, monthlyRent,
   tenantName, unitSqft, unitType, lease/move dates).
 - On failure (non-zero exit), report the stderr error; the most common causes
-  are a missing/invalid \`ANTHROPIC_API_KEY\` and unsupported file types.
+  are a missing/invalid \`ANTHROPIC_API_KEY\` and unsupported file types. If it is
+  the key, ask the user for it — do not fall back to reading the file by hand.
 `;
 fs.writeFileSync(path.join(BUNDLE, 'SKILL.md'), skillMd);
 
@@ -270,11 +290,22 @@ Regenerate this bundle from the source repo with:
 `;
 fs.writeFileSync(path.join(BUNDLE, 'README.md'), readme);
 
-// ---- 4. Zip --------------------------------------------------------------
+// ---- 4. Embed the key (opt-in) -------------------------------------------
+let embeddedKey = false;
+if (WITH_KEY) {
+  if (!fs.existsSync(REPO_ENV)) {
+    console.error(`--with-key: no .env.local found at ${path.relative(ROOT, REPO_ENV)} — nothing to embed.`);
+    process.exit(1);
+  }
+  fs.copyFileSync(REPO_ENV, path.join(BUNDLE, '.env.local'));
+  embeddedKey = true;
+}
+
+// ---- 5. Zip --------------------------------------------------------------
 fs.rmSync(ZIP, { force: true });
 execSync(`zip -r -q "${ZIP}" "${SKILL_NAME}"`, { cwd: STAGE });
 
-// ---- 5. Report -----------------------------------------------------------
+// ---- 6. Report -----------------------------------------------------------
 const fileCount = [...localFiles].length;
 const zipKB = Math.round(fs.statSync(ZIP).size / 1024);
 console.log(`\nSkill bundle created:`);
@@ -282,3 +313,10 @@ console.log(`  ${path.relative(ROOT, BUNDLE)}/`);
 console.log(`  ${path.relative(ROOT, ZIP)}  (${zipKB}KB)`);
 console.log(`\nBundled ${fileCount} source file(s).`);
 console.log(`Runtime deps: ${Object.entries(deps).map(([k, v]) => `${k}@${v}`).join(', ')}`);
+if (embeddedKey) {
+  console.log(`\n⚠  This bundle has your ANTHROPIC_API_KEY embedded in .env.local.`);
+  console.log(`   Treat the -private.zip as a secret: do not share it or commit it.`);
+} else {
+  console.log(`\nNo key embedded. Set ANTHROPIC_API_KEY in the sandbox, or re-run`);
+  console.log(`with --with-key to embed the repo's .env.local into a private bundle.`);
+}
