@@ -40,7 +40,7 @@ async function main() {
   const outIdx = args.indexOf('--out');
   const outArg = outIdx !== -1 ? args[outIdx + 1] : null;
   const asJson = args.includes('--json');
-  const file = args.find((a, i) => !a.startsWith('--') && i !== outIdx + 1);
+  const file = args.find((a, i) => !a.startsWith('--') && !(outIdx !== -1 && i === outIdx + 1));
   if (!file) usage();
 
   const filePath = path.resolve(file);

@@ -20,6 +20,9 @@
 # production
 /build
 
+# skill bundle export (scripts/export-skill.ts)
+/dist
+
 # misc
 .DS_Store
 *.pem
