@@ -81,7 +81,49 @@ npx tsx eval/run-eval.ts --set core   # 16-file representative set
 npx tsx eval/run-eval.ts --set smoke  # 5-file sanity check
 ```
 
-Current results: 99%+ macro-average field accuracy with zero missed and zero hallucinated units across the corpus. Reports land in `eval/runs/latest/REPORT.md`.
+Reports land in `eval/runs/latest/REPORT.md`.
+
+### Current results (2026-07-16)
+
+**Overall: 99.75% macro-average field accuracy across the 16-file representative set, 1,459 units, zero missed and zero hallucinated units.** (Fresh run after the chunked-extraction change; 16/16 files at or above the 95% target.)
+
+#### Accuracy by field
+
+| Field | Accuracy | Cells |
+|-------|----------|-------|
+| Unit presence | **100.0%** | 1459/1459 |
+| Unit type | **100.0%** | 1425/1425 |
+| Square footage | **100.0%** | 1287/1287 |
+| Move-out date | **100.0%** | 728/728 |
+| Status | **99.2%** | 1447/1459 |
+| Lease end date | **99.2%** | 1447/1459 |
+| Monthly rent | **99.1%** | 1446/1459 |
+| Tenant name | **99.1%** | 1294/1306 |
+| Move-in date | **99.0%** | 1281/1294 |
+| Lease start date | **98.6%** | 1142/1158 |
+
+#### Per-file results
+
+| Document | Units | Accuracy | Missed | Hallucinated |
+|----------|-------|----------|--------|--------------|
+| Fairways Rent Roll Details (.xlsx, chunked extraction) | 411 | 99.9% | 0 | 0 |
+| Institutional Wide .xls Rent Roll (.xls) | 320 | 98.1% | 0 | 0 |
+| Scanned Garden Apts Rent Roll (.pdf) | 200 | 100.0% | 0 | 0 |
+| Rent Roll with Lease Charges 06/02 (.xlsx) | 153 | 99.1% | 0 | 0 |
+| West 104th Street Rent Roll (.pdf) | 59 | 100.0% | 0 | 0 |
+| Holiday Apartments RR (.xlsm) | 55 | 100.0% | 0 | 0 |
+| Coney Rent Roll with Lease Charges (.pdf) | 51 | 100.0% | 0 | 0 |
+| Tenant Lease Agreement Info (.xlsx) | 50 | 100.0% | 0 | 0 |
+| 595 Ten Star Proforma (.xlsx) | 45 | 99.5% | 0 | 0 |
+| Rent Roll 6.5.2025 signed (.pdf, scan) | 39 | 100.0% | 0 | 0 |
+| South Rent Roll (.xlsx) | 36 | 100.0% | 0 | 0 |
+| 3340 RR + Arrears (.pdf) | 27 | 99.4% | 0 | 0 |
+| 1565 2nd Ave Rent Roll (.xlsx) | 6 | 100.0% | 0 | 0 |
+| Rent Roll + Operating Statement (.pdf) | 5 | 100.0% | 0 | 0 |
+| NY286 CM Rent Roll (.xlsx) | 2 | 100.0% | 0 | 0 |
+| Parsons Blvd Commercial/Residential (.xls, aggregate-only) | 0 | 100.0% | 0 | 0 |
+
+The set spans property management exports (OneSite/RealPage, Yardi, ResMan), proformas, scans, charge-code layouts, an arrears-mixed document, and an aggregate-only document whose correct answer is zero units. The 411-unit Fairways file exercises the chunked extraction path end to end.
 
 ## Cost
 
