@@ -8,8 +8,16 @@ import {
   runExtractionLadder,
   toMVPUnits,
   toStatedSummaryStats,
+  type ChunkingOptions,
   type ProgressReporter,
 } from './extractionCore';
+
+/** Count pages by scanning for page objects; null when the structure is
+ * unrecognizable (compressed object streams) — chunking is skipped then. */
+function detectPageCount(buffer: Buffer): number | null {
+  const matches = buffer.toString('latin1').match(/\/Type\s*\/Page[^s]/g);
+  return matches && matches.length > 0 ? matches.length : null;
+}
 
 /**
  * PDF parser v2.
@@ -63,8 +71,30 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
 
   // Phase 1: quick stated-summary read so the UI shows the document's own
   // totals within seconds. Phase 2: the full unit-level extraction ladder.
-  await extractStatedPreview(docBlocks, usages, report, 'the PDF');
-  const r = await runExtractionLadder(content, usages, report, 'PDF');
+  const preview = await extractStatedPreview(docBlocks, usages, report, 'the PDF');
+
+  // Chunked fallback for PDFs whose units don't fit in one 128K response:
+  // the ladder retries the same model on page ranges and merges.
+  const pageCount = detectPageCount(buffer);
+  const chunking: ChunkingOptions | undefined =
+    pageCount !== null && pageCount >= 2
+      ? {
+          itemCount: pageCount,
+          itemLabel: 'pages',
+          estimatedUnits: preview?.statedUnitCount ?? null,
+          makeChunkContent: ({ start, end, index, total }, feedback) => [
+            ...docBlocks,
+            {
+              type: 'text',
+              text:
+                `${PDF_PROMPT}\n\nCHUNK SCOPE (chunk ${index} of ${total}): this ${pageCount}-page PDF is being extracted in ${total} page-range chunks because it is too large for one response. Extract ONLY the units whose row appears on pages ${start} through ${end} (inclusive, 1-based). Units on other pages are handled by other chunks — do NOT output them. A unit belongs to this chunk when the row bearing its unit number is in range; include its full details even if its charge rows continue onto the next page. Still report propertyName, statedTotalUnits, and statedSummary for the WHOLE document (they may appear on any page). The final recount rule applies only to unit rows on pages ${start}–${end}.` +
+                (feedback ? `\n\n${feedback}` : ''),
+            },
+          ],
+        }
+      : undefined;
+
+  const r = await runExtractionLadder(content, usages, report, 'PDF', chunking);
   const usage = sumUsage(usages);
   return {
     units: toMVPUnits(r.units, 1),
@@ -72,7 +102,7 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
     statedSummaryStats: toStatedSummaryStats(r),
     propertyName: r.propertyName ?? null,
     format: `ai-extraction-v2 (pdf, ${usages.length} attempt${usages.length === 1 ? '' : 's'})`,
-    pageCount: null,
+    pageCount,
     modelUsed: usage.modelUsed,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,

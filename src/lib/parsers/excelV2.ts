@@ -8,6 +8,7 @@ import {
   runExtractionLadder,
   toMVPUnits,
   toStatedSummaryStats,
+  type ChunkingOptions,
   type ExtractionResult,
   type ProgressReporter,
 } from './extractionCore';
@@ -258,11 +259,33 @@ async function extractSheet(
   // Quick stated-summary read before the (slow) full extraction, so the UI has
   // the document's own totals within seconds. Skipped for small sheets, which
   // extract quickly anyway and sit below the prompt-cache minimum.
+  let preview = null;
   if (info.rows >= PREVIEW_MIN_ROWS) {
-    await extractStatedPreview(docBlocks, usages, report, `sheet "${info.name}"`);
+    preview = await extractStatedPreview(docBlocks, usages, report, `sheet "${info.name}"`);
   }
 
-  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`);
+  // Chunked fallback for sheets whose units don't fit in one 128K response:
+  // the ladder retries the same model on row ranges and merges. Row numbers
+  // reference the R{n}: prefixes in the sheet text; the last prefix is the
+  // true end row (sheets don't always start at R1).
+  const lastRowLabel = info.text.match(/^R(\d+):/gm)?.pop();
+  const endRow = lastRowLabel ? parseInt(lastRowLabel.slice(1), 10) : info.rows;
+  const chunking: ChunkingOptions = {
+    itemCount: endRow,
+    itemLabel: 'rows',
+    estimatedUnits: preview?.statedUnitCount ?? null,
+    makeChunkContent: ({ start, end, index, total }, feedback) => [
+      ...docBlocks,
+      {
+        type: 'text',
+        text:
+          `${instructions}\n\nCHUNK SCOPE (chunk ${index} of ${total}): this sheet is being extracted in ${total} row-range chunks because it is too large for one response. Extract ONLY the units whose unit number appears on sheet rows R${start} through R${end} (inclusive; row numbers are the R-prefixes in the sheet text above). Units on rows outside this range are handled by other chunks — do NOT output them. A unit belongs to this chunk when the row bearing its unit number is in range; include its full details even if its charge/detail rows continue past R${end}. Still report propertyName, statedTotalUnits, and statedSummary for the WHOLE document (they may appear anywhere in the sheet). The final recount rule applies only to unit rows within R${start}–R${end}.` +
+          (feedback ? `\n\n${feedback}` : ''),
+      },
+    ],
+  };
+
+  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`, chunking);
   return { result, usage: usages, path: 'ai' };
 }
 

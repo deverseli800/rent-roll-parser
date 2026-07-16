@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { MVPUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
-import { extractStructured, MODELS, modelLabel, type AIUsage } from './aiClient';
+import { extractStructured, MaxTokensError, MODELS, modelLabel, type AIUsage } from './aiClient';
 import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount } from '../utils/occupancy';
 
 /**
@@ -528,11 +528,164 @@ export type ProgressReporter = (
   event?: Pick<ProgressEvent, 'kind' | 'message'> & { preview?: PreviewData }
 ) => void;
 
+// A document's units no longer fit in one 128K-token response once it has
+// roughly this many units (~500 output tokens each incl. adaptive thinking).
+// Chunk target leaves ample headroom per call.
+const TARGET_UNITS_PER_CHUNK = 150;
+// Above this many stated units a single call is a mathematical certainty to
+// truncate — skip the wasted attempt and go straight to chunked mode.
+const PROACTIVE_CHUNK_UNITS = 400;
+const MIN_CHUNK_ITEMS = 4;
+
+export interface ChunkingOptions {
+  /** Total addressable items in the document (numbered sheet rows or PDF pages). */
+  itemCount: number;
+  itemLabel: 'rows' | 'pages';
+  /** Unit count the document states about itself (from the preview), when known. */
+  estimatedUnits?: number | null;
+  /** Builds the prompt restricted to items start..end (1-based, inclusive). */
+  makeChunkContent: (
+    range: { start: number; end: number; index: number; total: number },
+    feedback?: string
+  ) => Anthropic.ContentBlockParam[];
+}
+
+/** Boundary-duplicate key: adjacent chunks can both emit the unit whose block
+ * straddles the split. Legitimate same-numbered units in different buildings
+ * differ in tenant/rent, so the composite key keeps them. */
+function chunkDedupeKey(u: ExtractedUnit): string {
+  const num = String(u.unitNumber).toUpperCase().replace(/[#\s.,_/\\-]+/g, '');
+  return `${num}|${(u.tenantName ?? '').toUpperCase().trim()}|${u.monthlyRent ?? ''}`;
+}
+
+/**
+ * Extract one item range; on truncation, split the range in half and recurse.
+ * Returns partial results in document order.
+ */
+async function extractRange(
+  model: string,
+  chunking: ChunkingOptions,
+  range: { start: number; end: number; index: number; total: number },
+  usages: AIUsage[],
+  feedback?: string,
+  report?: ProgressReporter,
+  subject?: string
+): Promise<ExtractionResult[]> {
+  const label = `${subject ? subject + ' — ' : ''}${chunking.itemLabel} ${range.start}–${range.end}`;
+  try {
+    const { data, usage } = await extractStructured<ExtractionResult>({
+      model,
+      content: chunking.makeChunkContent(range, feedback),
+      schema: EXTRACTION_SCHEMA,
+      itemToken: '"unitNumber"',
+      onHeartbeat: report
+        ? ({ items }) => report('extracting', `${label} — ${items} unit${items === 1 ? '' : 's'} extracted so far`)
+        : undefined,
+    });
+    usages.push(usage);
+    normalizeStatedSentinels(data);
+    report?.('extracting', undefined, {
+      kind: 'info',
+      message: `Chunk ${range.index}/${range.total} (${chunking.itemLabel} ${range.start}–${range.end}) returned ${data.units.length} units`,
+    });
+    return [data];
+  } catch (e) {
+    const span = range.end - range.start + 1;
+    if (e instanceof MaxTokensError && span >= MIN_CHUNK_ITEMS * 2) {
+      report?.('extracting', undefined, {
+        kind: 'info',
+        message: `Chunk ${range.index}/${range.total} still exceeded the output limit — splitting ${chunking.itemLabel} ${range.start}–${range.end} in half`,
+      });
+      const mid = range.start + Math.floor(span / 2) - 1;
+      const halves = [
+        { ...range, end: mid },
+        { ...range, start: mid + 1 },
+      ];
+      const results = await Promise.all(
+        halves.map(h => extractRange(model, chunking, h, usages, feedback, report, subject))
+      );
+      return results.flat();
+    }
+    throw e;
+  }
+}
+
+/**
+ * Chunked extraction: split the document into item ranges, extract each with
+ * the SAME model, merge in document order. The merged result flows through the
+ * ladder's normal whole-document verification, so accuracy gating is unchanged.
+ */
+async function extractChunked(
+  model: string,
+  chunking: ChunkingOptions,
+  usages: AIUsage[],
+  feedback?: string,
+  report?: ProgressReporter,
+  subject?: string
+): Promise<ExtractionResult> {
+  const est = chunking.estimatedUnits ?? null;
+  const chunkCount = Math.min(
+    8,
+    Math.max(2, est ? Math.ceil(est / TARGET_UNITS_PER_CHUNK) : 3)
+  );
+  const per = Math.ceil(chunking.itemCount / chunkCount);
+  const ranges = Array.from({ length: chunkCount }, (_, i) => ({
+    start: i * per + 1,
+    end: Math.min((i + 1) * per, chunking.itemCount),
+    index: i + 1,
+    total: chunkCount,
+  })).filter(r => r.start <= r.end);
+  report?.('extracting', undefined, {
+    kind: 'info',
+    message: `Document is too large for one response — extracting in ${ranges.length} chunks of ~${per} ${chunking.itemLabel} each (${modelLabel(model)}), then merging and verifying against stated totals`,
+  });
+
+  // The document prefix is already in the prompt cache (preview / prior
+  // attempt streamed it), so parallel chunks all read it at ~0.1x price.
+  const parts = (
+    await Promise.all(
+      ranges.map(r => extractRange(model, chunking, r, usages, feedback, report, subject))
+    )
+  ).flat();
+
+  const seen = new Set<string>();
+  const units: ExtractedUnit[] = [];
+  for (const part of parts) {
+    for (const u of part.units) {
+      const key = chunkDedupeKey(u);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      units.push(u);
+    }
+  }
+  const firstNonNull = <T>(pick: (r: ExtractionResult) => T | null | undefined): T | null => {
+    for (const p of parts) {
+      const v = pick(p);
+      if (v !== null && v !== undefined) return v;
+    }
+    return null;
+  };
+  return {
+    propertyName: firstNonNull(p => p.propertyName),
+    statedTotalUnits: firstNonNull(p => p.statedTotalUnits),
+    statedSummary: {
+      totalMonthlyRent: firstNonNull(p => p.statedSummary?.totalMonthlyRent),
+      totalMarketRent: firstNonNull(p => p.statedSummary?.totalMarketRent),
+      totalSqft: firstNonNull(p => p.statedSummary?.totalSqft),
+      occupancyRate: firstNonNull(p => p.statedSummary?.occupancyRate),
+      occupiedUnits: firstNonNull(p => p.statedSummary?.occupiedUnits),
+      vacantUnits: firstNonNull(p => p.statedSummary?.vacantUnits),
+    },
+    units,
+  };
+}
+
 export async function runExtractionLadder(
   makeContent: (feedback?: string) => Anthropic.ContentBlockParam[],
   usages: AIUsage[],
   report?: ProgressReporter,
-  subject?: string
+  subject?: string,
+  chunking?: ChunkingOptions
 ): Promise<ExtractionResult> {
   let lastError: Error | null = null;
   let attemptNo = 0;
@@ -551,24 +704,48 @@ export async function runExtractionLadder(
       message: `${modelLabel(model)} extracting${where} (attempt ${attemptNo})`,
     });
     try {
-      const { data, usage } = await extractStructured<ExtractionResult>({
-        model,
-        content: makeContent(feedback),
-        schema: EXTRACTION_SCHEMA,
-        itemToken: '"unitNumber"',
-        onHeartbeat: report
-          ? ({ chars, items }) => {
-              const detail = items > 0
-                ? `${label} — ${items} unit${items === 1 ? '' : 's'} extracted so far`
-                : chars > 0
-                  ? `${label} — writing document summary (~${Math.round(chars / 1024)}KB streamed)`
-                  : `${label} — reading and analyzing the document (no output yet; large documents take several minutes)`;
-              report('extracting', detail);
-            }
-          : undefined,
-      });
-      usages.push(usage);
-      normalizeStatedSentinels(data);
+      let data: ExtractionResult;
+      const certainToTruncate =
+        chunking && (chunking.estimatedUnits ?? 0) >= PROACTIVE_CHUNK_UNITS;
+      if (certainToTruncate) {
+        report?.('extracting', undefined, {
+          kind: 'info',
+          message: `Document states ${chunking!.estimatedUnits} units — too many for a single response, going straight to chunked extraction`,
+        });
+        data = await extractChunked(model, chunking!, usages, feedback, report, subject);
+      } else {
+        try {
+          const single = await extractStructured<ExtractionResult>({
+            model,
+            content: makeContent(feedback),
+            schema: EXTRACTION_SCHEMA,
+            itemToken: '"unitNumber"',
+            onHeartbeat: report
+              ? ({ chars, items }) => {
+                  const detail = items > 0
+                    ? `${label} — ${items} unit${items === 1 ? '' : 's'} extracted so far`
+                    : chars > 0
+                      ? `${label} — writing document summary (~${Math.round(chars / 1024)}KB streamed)`
+                      : `${label} — reading and analyzing the document (no output yet; large documents take several minutes)`;
+                  report('extracting', detail);
+                }
+              : undefined,
+          });
+          usages.push(single.usage);
+          data = single.data;
+          normalizeStatedSentinels(data);
+        } catch (e) {
+          // Truncation is a size problem, not a quality problem — a stronger
+          // model produces the same volume of JSON, so escalating cannot fix
+          // it. Retry the SAME model in chunked mode instead.
+          if (!(e instanceof MaxTokensError) || !chunking) throw e;
+          report?.('extracting', undefined, {
+            kind: 'info',
+            message: `${modelLabel(model)}'s output hit the token limit — the document has more units than fit in one response. Retrying ${modelLabel(model)} in chunked mode (model escalation would not help here)`,
+          });
+          data = await extractChunked(model, chunking, usages, feedback, report, subject);
+        }
+      }
       const verification = verifyAgainstStated(data);
       if (verification.ok) {
         report?.('verifying', label, {
