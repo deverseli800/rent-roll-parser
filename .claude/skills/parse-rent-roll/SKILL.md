@@ -9,6 +9,16 @@ Run the full extraction pipeline (AI parse with model escalation ladder →
 summary stats → validation → verification checks → mismatch explanations) on a
 rent roll file and report the results.
 
+## Requires an ANTHROPIC_API_KEY — do not work around it
+
+This skill only works with a valid `ANTHROPIC_API_KEY`; it calls the Anthropic
+API to extract and verify the data. **If no key is available, STOP and ask the
+user to provide one. Do NOT read the spreadsheet or PDF yourself as a
+substitute** — a manual/structural read bypasses the AI extraction, the
+model-escalation ladder, and the verification checks that are the entire point
+of this skill, and cannot handle PDFs or scans at all. Report the missing key
+plainly and wait for it rather than producing an unverified hand-parsed result.
+
 ## Running it
 
 ```bash
