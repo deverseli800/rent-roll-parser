@@ -10,6 +10,7 @@ import {
   toStatedSummaryStats,
   type ChunkingOptions,
   type ExtractionResult,
+  type PreviewData,
   type ProgressReporter,
 } from './extractionCore';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -215,9 +216,45 @@ function sampleGrid(fullText: string): string {
   return [...first, '... (rows omitted) ...', ...middle, '... (rows omitted) ...', ...last].join('\n');
 }
 
+/** Summary-shaped sheets that triage rejected for unit extraction: small, and
+ * carrying totals/occupancy language. "Details + Summary" report exports
+ * (RealPage etc.) put the unit count and occupancy on these, not on the detail
+ * sheet — they are the only place those stated anchors exist. */
+function findSummarySheets(infos: SheetInfo[], selectedNames: string[]): SheetInfo[] {
+  return infos.filter(i =>
+    !selectedNames.includes(i.name) &&
+    i.rows <= 80 &&
+    /total|summar|occupan|#\s*units|unit\s*status|averages/i.test(i.text)
+  );
+}
+
+/** One cheap stated-summary read over the workbook's summary sheets. */
+async function harvestSummaryStated(
+  summaries: SheetInfo[],
+  usages: AIUsage[],
+  report?: ProgressReporter
+): Promise<PreviewData | null> {
+  if (summaries.length === 0) return null;
+  let text = summaries
+    .map(s => `=== SUMMARY SHEET "${s.name}" ===\n${s.text}`)
+    .join('\n\n');
+  if (text.length > 24000) text = text.slice(0, 24000);
+  report?.('extracting', 'reading workbook summary sheets', {
+    kind: 'info',
+    message: `Workbook has summary sheet${summaries.length === 1 ? '' : 's'} ${summaries.map(s => `"${s.name}"`).join(', ')} — reading stated totals (unit count, occupancy) from ${summaries.length === 1 ? 'it' : 'them'}`,
+  });
+  return extractStatedPreview(
+    [{ type: 'text', text: `Below are the SUMMARY sheets of an Excel rent roll workbook (the unit detail lives on another sheet). Read the totals they state:\n\n${text}` }],
+    usages,
+    report,
+    'summary sheets'
+  );
+}
+
 async function extractSheet(
   info: SheetInfo,
-  report?: ProgressReporter
+  report?: ProgressReporter,
+  external?: PreviewData | null
 ): Promise<{ result: ExtractionResult; usage: AIUsage[]; path: 'fast' | 'ai' }> {
   const usages: AIUsage[] = [];
 
@@ -227,7 +264,7 @@ async function extractSheet(
     kind: 'info',
     message: `Analyzing the structure of sheet "${info.name}" (${info.rows} rows) for a deterministic fast-path read`,
   });
-  const fast = await tryFastPath(info.sheet, sampleGrid(info.text), usages);
+  const fast = await tryFastPath(info.sheet, sampleGrid(info.text), usages, external);
   if (fast) {
     report?.('extracting', `sheet "${info.name}" — fast path`, {
       kind: 'fastpath',
@@ -259,9 +296,12 @@ async function extractSheet(
   // Quick stated-summary read before the (slow) full extraction, so the UI has
   // the document's own totals within seconds. Skipped for small sheets, which
   // extract quickly anyway and sit below the prompt-cache minimum.
-  let preview = null;
+  let preview = external ?? null;
   if (info.rows >= PREVIEW_MIN_ROWS) {
-    preview = await extractStatedPreview(docBlocks, usages, report, `sheet "${info.name}"`);
+    // Harvested summary-sheet totals ride along as the fallback: the sheet's
+    // own stated values win, summary-sheet values fill the gaps (unit count
+    // and occupancy usually only exist there on Details+Summary exports).
+    preview = await extractStatedPreview(docBlocks, usages, report, `sheet "${info.name}"`, external);
   }
 
   // Chunked fallback for sheets whose units don't fit in one 128K response:
@@ -285,7 +325,11 @@ async function extractSheet(
     ],
   };
 
-  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`, chunking);
+  // Only the summary-sheet harvest is injected as external verification
+  // anchors: the full extraction re-reads this sheet's own text itself, but it
+  // can never see the summary sheets. (external is null when none exist, so
+  // behavior is unchanged for ordinary workbooks.)
+  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`, chunking, external);
   return { result, usage: usages, path: 'ai' };
 }
 
@@ -352,11 +396,24 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
 
   const selected = infos.filter(i => selectedNames.includes(i.name));
 
+  // Details+Summary exports put the unit count/occupancy on summary sheets
+  // that triage (correctly) rejects for unit extraction. Harvest their stated
+  // totals so the preview, chunk sizing, and verification can use them. Only
+  // for single-sheet extractions: workbook-level totals would be wrong anchors
+  // for the per-building sheets of a multi-sheet workbook.
+  let harvested: PreviewData | null = null;
+  if (selected.length === 1) {
+    const summaries = findSummarySheets(infos, selectedNames);
+    const harvestUsage: AIUsage[] = [];
+    harvested = await harvestSummaryStated(summaries, harvestUsage, report);
+    allUsage.push(...harvestUsage);
+  }
+
   // Extract sheets (sequentially to be gentle on rate limits; sheets are few)
   const results: ExtractionResult[] = [];
   const paths: string[] = [];
   for (const sheetInfo of selected) {
-    const { result, usage, path } = await extractSheet(sheetInfo, report);
+    const { result, usage, path } = await extractSheet(sheetInfo, report, harvested);
     allUsage.push(...usage);
     results.push(result);
     paths.push(`${sheetInfo.name}:${path}`);
