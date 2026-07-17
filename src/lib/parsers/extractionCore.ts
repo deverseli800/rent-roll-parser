@@ -356,11 +356,38 @@ export interface PreviewData {
  * prompt-cache prefix is shared. Never throws — the preview is a UX
  * enhancement, not a pipeline dependency.
  */
+/** Fill null fields of `base` from `fallback` (e.g. totals harvested from a
+ * workbook's summary sheets when the extracted sheet states only some). */
+export function mergePreviewData(
+  base: PreviewData | null,
+  fallback: PreviewData | null
+): PreviewData | null {
+  if (!base) return fallback;
+  if (!fallback) return base;
+  const s = base.statedSummaryStats;
+  const f = fallback.statedSummaryStats;
+  const stats: StatedSummaryStats | null = s || f ? {
+    totalUnits: s?.totalUnits ?? f?.totalUnits ?? null,
+    totalMonthlyRent: s?.totalMonthlyRent ?? f?.totalMonthlyRent ?? null,
+    totalMarketRent: s?.totalMarketRent ?? f?.totalMarketRent ?? null,
+    totalSqft: s?.totalSqft ?? f?.totalSqft ?? null,
+    occupancyRate: s?.occupancyRate ?? f?.occupancyRate ?? null,
+    occupiedUnits: s?.occupiedUnits ?? f?.occupiedUnits ?? null,
+    vacantUnits: s?.vacantUnits ?? f?.vacantUnits ?? null,
+  } : null;
+  return {
+    propertyName: base.propertyName ?? fallback.propertyName,
+    statedUnitCount: base.statedUnitCount ?? fallback.statedUnitCount,
+    statedSummaryStats: stats,
+  };
+}
+
 export async function extractStatedPreview(
   docContent: Anthropic.ContentBlockParam[],
   usages: AIUsage[],
   report?: ProgressReporter,
-  subject?: string
+  subject?: string,
+  fallback?: PreviewData | null
 ): Promise<PreviewData | null> {
   const where = subject ? ` of ${subject}` : '';
   report?.('extracting', `quick scan${where} — reading the document's stated totals`, {
@@ -378,11 +405,11 @@ export async function extractStatedPreview(
     });
     usages.push(usage);
     normalizeStatedSentinels(data);
-    const preview: PreviewData = {
+    const preview: PreviewData = mergePreviewData({
       propertyName: data.propertyName ?? null,
       statedUnitCount: data.statedTotalUnits ?? null,
       statedSummaryStats: toStatedSummaryStats({ ...data, units: [] }),
-    };
+    }, fallback ?? null)!;
 
     const s = preview.statedSummaryStats;
     const parts: string[] = [];
@@ -405,7 +432,7 @@ export async function extractStatedPreview(
       kind: 'info',
       message: `Quick summary scan failed (${msg.slice(0, 100)}) — proceeding to full extraction`,
     });
-    return null;
+    return fallback ?? null;
   }
 }
 
@@ -718,12 +745,34 @@ async function extractChunked(
   };
 }
 
+/** Fill stated fields the extracted sheet couldn't state itself (they live on
+ * a summary sheet the caller harvested separately). Fills nulls only — the
+ * sheet's own stated values always win. Runs before verification, so external
+ * anchors (e.g. a summary-sheet unit count) gate the extraction too. */
+export function applyExternalStated(data: ExtractionResult, ext: PreviewData): void {
+  data.propertyName = data.propertyName ?? ext.propertyName;
+  data.statedTotalUnits = data.statedTotalUnits ?? ext.statedUnitCount;
+  const s = ext.statedSummaryStats;
+  if (!s) return;
+  data.statedSummary = data.statedSummary ?? {
+    totalMonthlyRent: null, totalMarketRent: null, totalSqft: null,
+    occupancyRate: null, occupiedUnits: null, vacantUnits: null,
+  };
+  data.statedSummary.totalMonthlyRent = data.statedSummary.totalMonthlyRent ?? s.totalMonthlyRent;
+  data.statedSummary.totalMarketRent = data.statedSummary.totalMarketRent ?? s.totalMarketRent;
+  data.statedSummary.totalSqft = data.statedSummary.totalSqft ?? s.totalSqft;
+  data.statedSummary.occupancyRate = data.statedSummary.occupancyRate ?? s.occupancyRate;
+  data.statedSummary.occupiedUnits = data.statedSummary.occupiedUnits ?? s.occupiedUnits;
+  data.statedSummary.vacantUnits = data.statedSummary.vacantUnits ?? s.vacantUnits;
+}
+
 export async function runExtractionLadder(
   makeContent: (feedback?: string) => Anthropic.ContentBlockParam[],
   usages: AIUsage[],
   report?: ProgressReporter,
   subject?: string,
-  chunking?: ChunkingOptions
+  chunking?: ChunkingOptions,
+  externalStated?: PreviewData | null
 ): Promise<ExtractionResult> {
   let lastError: Error | null = null;
   let attemptNo = 0;
@@ -784,6 +833,7 @@ export async function runExtractionLadder(
           data = await extractChunked(model, chunking, usages, feedback, report, subject);
         }
       }
+      if (externalStated) applyExternalStated(data, externalStated);
       const verification = verifyAgainstStated(data);
       if (verification.ok) {
         report?.('verifying', label, {

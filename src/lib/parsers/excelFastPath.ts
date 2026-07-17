@@ -1,10 +1,12 @@
 import * as XLSX from 'xlsx';
 import { extractStructured, MODELS, type AIUsage } from './aiClient';
 import {
+  applyExternalStated,
   normalizeStatus,
   verifyAgainstStated,
   type ExtractionResult,
   type ExtractedUnit,
+  type PreviewData,
 } from './extractionCore';
 
 /**
@@ -490,13 +492,17 @@ export function applyStructure(
 export async function tryFastPath(
   sheet: XLSX.WorkSheet,
   sampleText: string,
-  usages: AIUsage[]
+  usages: AIUsage[],
+  external?: PreviewData | null
 ): Promise<ExtractionResult | null> {
   try {
     const { structure, usage } = await mapSheetStructure(sampleText + columnValueInventory(sheet));
     usages.push(usage);
     const result = applyStructure(sheet, structure);
     if (!result || result.units.length === 0) return null;
+    // Details+Summary exports state the unit count on a summary sheet, not the
+    // detail sheet — harvested anchors let the fast path prove itself there.
+    if (external) applyExternalStated(result, external);
     const verification = verifyAgainstStated(result);
     // The fast path must PROVE itself against stated anchors. A rent total
     // alone cannot catch a dropped null-rent unit (e.g. a vacant retail row),
