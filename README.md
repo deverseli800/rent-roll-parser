@@ -2,7 +2,7 @@
 
 An AI-powered pipeline that turns multifamily rent rolls (Excel or PDF, digital or scanned) into clean, validated, unit-level JSON. Upload a document, and the system extracts every unit with its rent, status, tenant, dates, and rent components, then verifies the extraction against the totals the document states about itself.
 
-Built with Next.js and the Anthropic Claude API. Includes a web app with a live progress view and review grid, a CLI for scripting, and a ground-truthed evaluation harness (46 real rent rolls, 99%+ macro-average field accuracy).
+Built with Next.js and the Anthropic Claude API. Includes a web app with a live progress view and review grid, a CLI for scripting, and a ground-truthed evaluation harness (76 real rent rolls, 99%+ macro-average field accuracy).
 
 ## What it extracts
 
@@ -72,7 +72,7 @@ While processing, the response carries the live progress timeline (stage, curren
 
 ## Accuracy and evaluation
 
-A ground-truthed eval corpus of 46 real rent rolls (OneSite/RealPage, Yardi, ResMan, AppFolio, proformas, scanned PDFs, commercial/residential mixes) lives in `eval/`. The scorer aligns extracted units to ground truth and reports per-field accuracy, missed units, and hallucinated units.
+A ground-truthed eval corpus of 76 real rent rolls (OneSite/RealPage, Yardi, ResMan, AppFolio, proformas, scanned PDFs, commercial/residential mixes) lives in `eval/`. The scorer aligns extracted units to ground truth and reports per-field accuracy, missed units, and hallucinated units.
 
 ```bash
 npx tsx eval/run-eval.ts              # parse (cached) + score all files
