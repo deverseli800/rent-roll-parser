@@ -315,7 +315,8 @@ export async function mapSheetStructure(
 /** Walk the sheet deterministically using the structure. */
 export function applyStructure(
   sheet: XLSX.WorkSheet,
-  s: SheetStructure
+  s: SheetStructure,
+  dedupe: 'applicant-over-vacant' | 'current-occupancy' = 'applicant-over-vacant'
 ): ExtractionResult | null {
   if (s.layout === 'unsupported' || s.columns.unitNumber === null) return null;
   if (s.layout === 'block' && (!s.block || s.block.chargeDescCol === null || s.block.chargeAmtCol === null || s.block.rentChargeCodes.length === 0)) {
@@ -462,8 +463,15 @@ export function applyStructure(
   }
 
   // Dedupe repeated unit numbers (applicant/renewal duplicate rows): keep the
-  // higher-priority occupancy row, matching the prompt-side dedupe rule.
-  const priority: Record<string, number> = { occupied: 5, notice: 4, applicant: 3, model: 2, down: 2, vacant: 1 };
+  // higher-priority occupancy row. Documents disagree on the convention —
+  // some totals count a vacant-leased unit's APPLICANT row (future rent),
+  // others count the current VACANT row (rent 0, per "occupied and vacant
+  // units only" footnotes). The caller tries both and lets the document's own
+  // stated totals arbitrate.
+  const priority: Record<string, number> =
+    dedupe === 'applicant-over-vacant'
+      ? { occupied: 5, notice: 4, applicant: 3, model: 2, down: 2, vacant: 1 }
+      : { occupied: 5, notice: 4, vacant: 3, model: 2, down: 2, applicant: 1 };
   const byUnit = new Map<string, ExtractedUnit>();
   for (const u of units) {
     const key = u.unitNumber.toUpperCase();
@@ -494,23 +502,49 @@ export async function tryFastPath(
   sampleText: string,
   usages: AIUsage[],
   external?: PreviewData | null
-): Promise<ExtractionResult | null> {
+): Promise<{ result: ExtractionResult | null; reason?: string }> {
   try {
-    const { structure, usage } = await mapSheetStructure(sampleText + columnValueInventory(sheet));
-    usages.push(usage);
-    const result = applyStructure(sheet, structure);
-    if (!result || result.units.length === 0) return null;
-    // Details+Summary exports state the unit count on a summary sheet, not the
-    // detail sheet — harvested anchors let the fast path prove itself there.
-    if (external) applyExternalStated(result, external);
-    const verification = verifyAgainstStated(result);
-    // The fast path must PROVE itself against stated anchors. A rent total
-    // alone cannot catch a dropped null-rent unit (e.g. a vacant retail row),
-    // so specifically require a stated unit COUNT to accept the fast result.
-    if (!verification.ok || result.statedTotalUnits === null) return null;
-    return result;
+    let reason = '';
+    const inventory = columnValueInventory(sheet);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const hint = attempt > 1
+        ? `\n\nNOTE: a previous structure mapping produced a walk that failed verification (${reason.slice(0, 300)}). Re-examine the layout — the usual causes are the wrong rent column (actual in-place rent vs market/scheduled rent vs total charges) or wrong skip/stop markers.`
+        : '';
+      const { structure, usage } = await mapSheetStructure(sampleText + inventory + hint);
+      usages.push(usage);
+
+      // Try both duplicate-row conventions (see applyStructure): whichever one
+      // reconciles with the document's stated totals is the one this document
+      // uses. The walk is pure code, so the second variant is free.
+      let sawWalk = false;
+      let anchored = external?.statedUnitCount != null;
+      for (const convention of ['applicant-over-vacant', 'current-occupancy'] as const) {
+        const result = applyStructure(sheet, structure, convention);
+        if (!result || result.units.length === 0) continue;
+        sawWalk = true;
+        // Details+Summary exports state the unit count on a summary sheet, not
+        // the detail sheet — harvested anchors let the fast path prove itself.
+        if (external) applyExternalStated(result, external);
+        const verification = verifyAgainstStated(result);
+        // The fast path must PROVE itself against stated anchors. A rent total
+        // alone cannot catch a dropped null-rent unit (e.g. a vacant retail
+        // row), so specifically require a stated unit COUNT.
+        if (verification.ok && result.statedTotalUnits !== null) return { result };
+        anchored = anchored || result.statedTotalUnits !== null;
+        reason = result.statedTotalUnits === null
+          ? 'the document states no unit count to prove the deterministic read against'
+          : (verification.issues[0] ?? 'verification failed');
+      }
+      if (!sawWalk) reason = 'layout unsupported by the deterministic walker';
+
+      // A second mapper attempt is only worth ~1 min when the document offers
+      // a unit-count anchor the walk could actually satisfy.
+      if (!anchored) break;
+    }
+    return { result: null, reason };
   } catch (e) {
-    console.warn('[excelFastPath] failed, falling back to full AI:', e instanceof Error ? e.message : e);
-    return null;
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[excelFastPath] failed, falling back to full AI:', msg);
+    return { result: null, reason: `mapper error: ${msg.slice(0, 120)}` };
   }
 }
