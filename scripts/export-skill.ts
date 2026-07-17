@@ -129,6 +129,11 @@ for (const file of localFiles) {
   fs.copyFileSync(file, dest);
 }
 
+// run.ts is the launcher (adds corporate-proxy CA trust, then spawns the entry).
+// It reaches the entry via a runtime spawn, not an import, so the closure walk
+// above doesn't see it — copy it explicitly.
+fs.copyFileSync(path.join(ROOT, 'scripts', 'run.ts'), path.join(BUNDLE, 'scripts', 'run.ts'));
+
 // package.json — runtime deps + tsx to execute the TS entry
 const bundlePkg = {
   name: `${SKILL_NAME}-skill`,
@@ -136,7 +141,7 @@ const bundlePkg = {
   private: true,
   description: 'Standalone rent-roll extraction pipeline packaged as a Claude skill.',
   scripts: {
-    parse: 'tsx scripts/parse-rent-roll.ts',
+    parse: 'tsx scripts/run.ts',
   },
   dependencies: deps,
   devDependencies: {
@@ -222,11 +227,21 @@ From this skill's directory:
 
 \`\`\`bash
 npm run parse -- <path-to-file> [--out <path>] [--json]
-# or:  npx tsx scripts/parse-rent-roll.ts <path-to-file>
+# or:  npx tsx scripts/run.ts <path-to-file>
 \`\`\`
+
+Always run it through \`npm run parse\` / \`scripts/run.ts\` (not
+\`scripts/parse-rent-roll.ts\` directly): the launcher makes the pipeline work
+behind a corporate TLS-intercepting proxy by trusting the proxy's CA before the
+API call. It is a no-op where there is no such proxy.
 
 - Accepts \`.xlsx\`, \`.xls\`, \`.xlsm\`, and \`.pdf\` (vision extraction — scanned
   PDFs work).
+- **Corporate proxy / TLS errors:** the launcher auto-detects a proxy CA at
+  \`/usr/local/share/ca-certificates/mitm-proxy-ca.crt\` (and the system CA
+  bundle). If you still hit a certificate error (\`self-signed certificate\`,
+  \`unable to get local issuer certificate\`), set \`NODE_EXTRA_CA_CERTS\` to your
+  proxy's CA \`.crt\` path and re-run — do not disable TLS verification.
 - **Timing:** small documents finish in under a minute; large documents take
   5–25 minutes. Run it in the background and monitor rather than blocking on it.
   Progress streams to stderr, including "N units extracted so far" heartbeats —
