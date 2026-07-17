@@ -1,7 +1,7 @@
 /**
  * Scoring library for rent roll parser eval. See eval/SPEC.md.
  */
-import type { MVPUnit } from '../src/lib/types';
+import type { GenericRentRollUnit } from '../src/lib/types';
 
 export interface GroundTruthUnit {
   unitNumber: string;
@@ -15,6 +15,13 @@ export interface GroundTruthUnit {
   leaseEndDate?: string | null;
   moveInDate?: string | null;
   moveOutDate?: string | null;
+  // Generic classification: 'residential' | 'commercial' | 'non_unit_income'.
+  category?: string | null;
+  // The rent-regulation / lease-type value printed for this unit in the
+  // document, VERBATIM (e.g. "RS", "FM", "Decontrolled"). Graded by checking
+  // the parser captured it in the unit's sourceColumns passthrough — the engine
+  // is not expected to interpret it. null when the document has no such value.
+  regulation?: string | null;
 }
 
 export interface GroundTruth {
@@ -167,13 +174,41 @@ function datesMatch(gt: string | null, actual: string | null): boolean {
   return gt.slice(0, 10) === actual.slice(0, 10);
 }
 
+function categoryMatch(gt: string | null | undefined, actual: string | null | undefined): boolean {
+  const norm = (s: string | null | undefined) => (s === null || s === undefined) ? null : String(s).toLowerCase().trim();
+  const g = norm(gt), a = norm(actual);
+  if (g === null && a === null) return true;
+  if (g === null || a === null) return false;
+  return g === a;
+}
+
+const normReg = (s: string) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+/**
+ * True if the expected verbatim regulation label was captured in the unit's
+ * sourceColumns passthrough. Tests CAPTURE, not interpretation: the engine must
+ * preserve the document's regulation/lease-type cell somewhere, not decode it.
+ * A null/blank expected value is trivially satisfied (nothing to capture).
+ */
+function regulationCaptured(expected: string | null | undefined, sourceColumns?: { header: string; value: string }[]): boolean {
+  if (expected === null || expected === undefined || String(expected).trim() === '') return true;
+  const want = normReg(expected);
+  if (!want) return true;
+  if (!sourceColumns || sourceColumns.length === 0) return false;
+  return sourceColumns.some(c => {
+    const v = normReg(c.value);
+    if (!v) return false;
+    if (v === want) return true;
+    return want.length >= 2 && (v.includes(want) || want.includes(v));
+  });
+}
+
 /**
  * Align extracted units to ground truth units by normalized unit number.
  * Handles multi-property files where one side may carry a building prefix:
  * falls back to suffix matching when exact normalized match fails and the
  * match is unambiguous.
  */
-function alignUnits(gtUnits: GroundTruthUnit[], extracted: MVPUnit[]): Map<number, number> {
+function alignUnits(gtUnits: GroundTruthUnit[], extracted: GenericRentRollUnit[]): Map<number, number> {
   const mapping = new Map<number, number>(); // gt index -> extracted index
   const usedExtracted = new Set<number>();
 
@@ -220,9 +255,10 @@ function alignUnits(gtUnits: GroundTruthUnit[], extracted: MVPUnit[]): Map<numbe
 const FIELD_ORDER = [
   'status', 'monthlyRent', 'tenantName', 'unitSqft', 'unitType',
   'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate',
+  'category', 'regulation',
 ] as const;
 
-export function scoreFile(gt: GroundTruth, extracted: MVPUnit[]): FileScore {
+export function scoreFile(gt: GroundTruth, extracted: GenericRentRollUnit[]): FileScore {
   const fields = FIELD_ORDER.filter(f => gt.documentFields.includes(f));
   const mapping = alignUnits(gt.units, extracted);
   const matchedExtracted = new Set(mapping.values());
@@ -293,6 +329,14 @@ export function scoreFile(gt: GroundTruth, extracted: MVPUnit[]): FileScore {
         case 'leaseEndDate': ok = datesMatch((g.leaseEndDate ?? null) as string | null, e.leaseEndDate); break;
         case 'moveInDate': ok = datesMatch((g.moveInDate ?? null) as string | null, e.moveInDate); break;
         case 'moveOutDate': ok = datesMatch((g.moveOutDate ?? null) as string | null, e.moveOutDate); break;
+        case 'category':
+          ok = categoryMatch(g.category, e.category);
+          actual = e.category ?? null;
+          break;
+        case 'regulation':
+          ok = regulationCaptured(g.regulation, e.sourceColumns);
+          actual = e.sourceColumns ?? null;
+          break;
       }
       fieldBreakdown[f].total++;
       if (ok) fieldBreakdown[f].correct++;

@@ -58,6 +58,10 @@ interface SheetStructure {
     occupiedUnits: number | null;
     vacantUnits: number | null;
   };
+  // Unit-row columns NOT mapped to a known field above; captured verbatim into
+  // each unit's sourceColumns (e.g. a rent-regulation/lease-type column, a
+  // legal/registered rent column, DHCR codes).
+  extraColumns: { header: string; index: number }[];
 }
 
 const numOrNull = { type: ['number', 'null'] } as const;
@@ -68,7 +72,7 @@ const colIdx = { type: 'number', description: '0-based cell index, or -1 if this
 const STRUCTURE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['layout', 'dataStartRow', 'columns', 'block', 'skipPatterns', 'stopMarkers', 'statedTotalUnits', 'statedSummary'],
+  required: ['layout', 'dataStartRow', 'columns', 'block', 'skipPatterns', 'stopMarkers', 'statedTotalUnits', 'statedSummary', 'extraColumns'],
   properties: {
     layout: { type: 'string', enum: ['row', 'block', 'unsupported'] },
     dataStartRow: { type: 'number' },
@@ -109,6 +113,19 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
         occupancyRate: numOrNull, occupiedUnits: numOrNull, vacantUnits: numOrNull,
       },
     },
+    extraColumns: {
+      type: 'array',
+      description: 'Every DATA column on unit rows NOT mapped to a field in "columns" — e.g. a rent-regulation/lease-type column (values like RS/RC/FM/Stabilized/Decontrolled), a legal/registered/preferential rent column, DHCR codes, or any other column. Give each column header text and 0-based cell index. [] if none.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['header', 'index'],
+        properties: {
+          header: { type: 'string' },
+          index: { type: 'number' },
+        },
+      },
+    },
   },
 };
 
@@ -137,6 +154,7 @@ Decide:
 5. skipPatterns: lowercase substrings identifying NON-unit rows to skip when they appear in the unit-number cell or the first cells (e.g. "total", "summary", floorplan group headers).
 6. stopMarkers: lowercase substrings marking where unit data ENDS (e.g. "future residents/applicants", "summary groups", "unit type occupancy", "totals"). The walker stops at the first row containing any of these. Sections AFTER the stop (future residents, applicants, summaries) must not be extracted.
 7. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current RENT total — the figure matching the rent charge code alone (a "Summary of Charges by Charge Code" rent line is the best source). It is NOT a total-charges/"Lease Charges" total that adds fees (trash, pet, parking) on top of rent, and NOT market rent. A stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
+8. extraColumns: every DATA column on unit rows that you did NOT map to a field in "columns" above. Give each one's header text (verbatim) and 0-based cell index. This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE"), any legal / registered / preferential rent column, and DHCR status codes. Deterministic code copies these cells verbatim; do NOT list columns already mapped in "columns", charge-code columns, or empty/decorative columns. [] when there are none.
 
 If unit rows in this sheet don't share one consistent column layout, or you are unsure the mapping is exact, answer layout="unsupported" — a slower full extraction will handle it. Correctness matters more than coverage.`;
 
@@ -205,6 +223,26 @@ function rowText(sheet: XLSX.WorkSheet, r: number, maxCol: number): string {
 
 function matchesAny(text: string, patterns: string[]): boolean {
   return patterns.some(p => p && text.includes(p.toLowerCase()));
+}
+
+/**
+ * Deterministic category heuristic for the fast path (the full-AI path
+ * classifies per-row). Uses the unit id and type text the walker already reads.
+ * Factual only — NOT a regulatory status. Ancillary income lines
+ * (parking/antenna/laundry/storage/signage) get includeInUnitCount=false.
+ */
+function classifyCategory(
+  unitNumber: string,
+  unitType: string | null,
+): { category: 'residential' | 'commercial' | 'non_unit_income'; includeInUnitCount: boolean } {
+  const s = `${unitNumber} ${unitType ?? ''}`.toLowerCase();
+  if (/\b(parking|garage|carport|antenna|cell\s*tower|rooftop|laundry|storage|locker|billboard|signage|sign)\b/.test(s)) {
+    return { category: 'non_unit_income', includeInUnitCount: false };
+  }
+  if (/\b(store|retail|office|comm|commercial|restaurant|medical|professional)\b/.test(s) || /^c\d|^cm\b|^comm/i.test(unitNumber)) {
+    return { category: 'commercial', includeInUnitCount: true };
+  }
+  return { category: 'residential', includeInUnitCount: true };
 }
 
 /**
@@ -296,6 +334,16 @@ export function applyStructure(
   const units: ExtractedUnit[] = [];
   const cols = s.columns;
 
+  // Columns to capture verbatim into sourceColumns: the mapper's extraColumns,
+  // minus any index already mapped to a first-class field (guard against the
+  // mapper double-listing a mapped column).
+  const usedIdx = new Set<number>();
+  for (const v of Object.values(cols)) if (v !== null) usedIdx.add(v);
+  if (s.block) { for (const v of [s.block.chargeDescCol, s.block.chargeAmtCol]) if (v !== null) usedIdx.add(v); }
+  const extraCols = (s.extraColumns ?? []).filter(
+    ec => ec && typeof ec.index === 'number' && ec.index >= 0 && !usedIdx.has(ec.index) && ec.header,
+  );
+
   const isUnitRow = (r: number): string | null => {
     const unitVal = readString(cellValue(sheet, r, cols.unitNumber!));
     if (!unitVal || unitVal.length > 30) return null;
@@ -383,9 +431,18 @@ export function applyStructure(
       else status = tenant ? 'occupied' : 'vacant';
     }
 
+    const unitType = cols.unitType !== null ? readString(cellValue(sheet, r, cols.unitType)) : null;
+    const { category, includeInUnitCount } = classifyCategory(unitNumber, unitType);
+    const sourceColumns = extraCols
+      .map(ec => ({ header: ec.header, value: readString(cellValue(sheet, r, ec.index)) }))
+      .filter((x): x is { header: string; value: string } => x.value !== null);
+
     units.push({
       unitNumber,
       status,
+      category,
+      includeInUnitCount,
+      sourceColumns,
       monthlyRent,
       marketRent: cols.marketRent !== null ? readNumber(cellValue(sheet, r, cols.marketRent)) : null,
       subsidyRent,
@@ -393,7 +450,7 @@ export function applyStructure(
       concession,
       tenantName: tenant,
       unitSqft: cols.unitSqft !== null ? readNumber(cellValue(sheet, r, cols.unitSqft)) : null,
-      unitType: cols.unitType !== null ? readString(cellValue(sheet, r, cols.unitType)) : null,
+      unitType,
       leaseStatus: rawStatus,
       moveInDate: cols.moveInDate !== null ? readDate(cellValue(sheet, r, cols.moveInDate)) : null,
       moveOutDate: cols.moveOutDate !== null ? readDate(cellValue(sheet, r, cols.moveOutDate)) : null,

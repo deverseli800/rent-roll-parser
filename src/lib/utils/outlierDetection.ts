@@ -1,4 +1,4 @@
-import type { MVPUnit } from '../types';
+import type { GenericRentRollUnit } from '../types';
 
 export interface CellHighlight {
   type: 'outlier' | 'warning' | 'critical';
@@ -57,7 +57,7 @@ function calculateStats(values: number[]): { mean: number; stdDev: number; min: 
 /**
  * Detect outliers and data quality issues for all units
  */
-export function detectHighlights(units: MVPUnit[]): Map<number, UnitHighlights> {
+export function detectHighlights(units: GenericRentRollUnit[]): Map<number, UnitHighlights> {
   const highlights = new Map<number, UnitHighlights>();
 
   // Get valid rent values for occupied/notice units

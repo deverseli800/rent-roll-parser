@@ -1,5 +1,5 @@
 import type {
-  MVPUnit,
+  GenericRentRollUnit,
   StatedSummaryStats,
   SummaryStats,
   VerificationCheck,
@@ -12,7 +12,7 @@ import { reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from
  * Similar to unit tests - each check passes, fails, or is skipped
  */
 export function runVerificationChecks(
-  units: MVPUnit[],
+  units: GenericRentRollUnit[],
   statedUnitCount: number | null,
   statedStats: StatedSummaryStats | null,
   calculatedStats: SummaryStats | null
@@ -122,7 +122,7 @@ function checkUnitCount(
   };
 }
 
-function checkNoDuplicates(units: MVPUnit[]): VerificationCheck {
+function checkNoDuplicates(units: GenericRentRollUnit[]): VerificationCheck {
   const seen = new Set<string>();
   const duplicates: string[] = [];
 
@@ -153,7 +153,7 @@ function checkNoDuplicates(units: MVPUnit[]): VerificationCheck {
   };
 }
 
-function checkNoMissingUnitNumbers(units: MVPUnit[]): VerificationCheck {
+function checkNoMissingUnitNumbers(units: GenericRentRollUnit[]): VerificationCheck {
   const missing = units.filter(u => !u.unitNumber || u.unitNumber.trim() === '');
 
   if (missing.length === 0) {

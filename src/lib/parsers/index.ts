@@ -1,9 +1,9 @@
 import { parseExcelV2 } from './excelV2';
 import { parsePDFV2 } from './pdfV2';
-import type { MVPUnit, StatedSummaryStats } from '../types';
+import type { GenericRentRollUnit, StatedSummaryStats } from '../types';
 
 export interface ParseResult {
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   statedSummaryStats: StatedSummaryStats | null;
   propertyName: string | null;

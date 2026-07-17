@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { MODELS, type AIUsage } from '../parsers/aiClient';
-import type { MVPUnit, StatedSummaryStats, SummaryStats, VerificationCheck, MismatchExplanation, ExplanationSummary } from '../types';
+import type { GenericRentRollUnit, StatedSummaryStats, SummaryStats, VerificationCheck, MismatchExplanation, ExplanationSummary } from '../types';
 
 const EXPLANATION_PROMPT = `You are analyzing a rent roll extraction to explain WHY mismatches exist between stated values (from the document) and calculated values (from extracted units).
 
@@ -59,7 +59,7 @@ Return JSON only:
 }`;
 
 export async function explainMismatches(
-  units: MVPUnit[],
+  units: GenericRentRollUnit[],
   statedStats: StatedSummaryStats | null,
   calculatedStats: SummaryStats | null,
   failedChecks: VerificationCheck[],

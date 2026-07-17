@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// MVP Zod Schemas - Focused on unit count accuracy
+// Core rent-roll Zod schemas - focused on unit count accuracy
 
 export const UnitStatusSchema = z.enum([
   'occupied',
@@ -11,7 +11,7 @@ export const UnitStatusSchema = z.enum([
   'applicant'
 ]);
 
-export const MVPUnitSchema = z.object({
+export const GenericRentRollUnitSchema = z.object({
   unitNumber: z.string().min(1, "Unit number is required"),
   status: UnitStatusSchema,
   monthlyRent: z.number().nullable(),
@@ -119,7 +119,7 @@ export const RentRollExtractionSchema = z.object({
   processedAt: z.string().datetime().nullable(),
   status: z.enum(['processing', 'review', 'approved', 'error']),
 
-  units: z.array(MVPUnitSchema),
+  units: z.array(GenericRentRollUnitSchema),
 
   statedUnitCount: z.number().nullable(),
   extractedUnitCount: z.number(),
@@ -177,6 +177,6 @@ export const ClaudeExtractionResponseSchema = z.object({
   countMatch: z.boolean().optional(),
 });
 
-export type MVPUnitInput = z.infer<typeof MVPUnitSchema>;
+export type GenericRentRollUnitInput = z.infer<typeof GenericRentRollUnitSchema>;
 export type RentRollExtractionInput = z.infer<typeof RentRollExtractionSchema>;
 export type ClaudeExtractionResponse = z.infer<typeof ClaudeExtractionResponseSchema>;

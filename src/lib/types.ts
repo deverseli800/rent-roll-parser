@@ -1,4 +1,4 @@
-// MVP Types - Focused on unit count accuracy
+// Core rent-roll types - focused on unit count accuracy
 
 export type UnitStatus = 'occupied' | 'vacant' | 'notice' | 'model' | 'down' | 'applicant';
 
@@ -27,7 +27,17 @@ export interface UnitCharge {
   category: ChargeCategory;  // Normalized category
 }
 
-export interface MVPUnit {
+// Verbatim passthrough of a document column not mapped to a first-class field.
+// Copied exactly as printed and NOT interpreted — consumers apply their own
+// (e.g. jurisdiction-specific) meaning. This is how the parser preserves
+// columns like rent-regulation / lease-type, legal or registered rent, DHCR
+// codes, etc. without baking any domain logic into the generic engine.
+export interface SourceColumn {
+  header: string;         // Column header text, verbatim
+  value: string;          // Cell value, verbatim
+}
+
+export interface GenericRentRollUnit {
   unitNumber: string;
   status: UnitStatus;
   monthlyRent: number | null;
@@ -41,6 +51,18 @@ export interface MVPUnit {
   subsidyRent?: number | null;       // Subsidy/HAP portion of monthlyRent
   employeeDiscount?: number | null;  // Recurring employee/other discount (negative as shown)
   concession?: number | null;        // Recurring concession amount (negative as shown)
+
+  // Generic classification of what the row IS (populated by the v2 extractor).
+  // This is factual, NOT a legal/regulatory status: a rent-stabilized apartment
+  // is still category "residential". Consumers derive regulation themselves.
+  category?: 'residential' | 'commercial' | 'non_unit_income' | null;
+  includeInUnitCount?: boolean | null;  // false for non_unit_income (parking/antenna/laundry/storage/signage)
+
+  // Verbatim passthrough of document columns not mapped to a field below
+  // (e.g. a rent-regulation / lease-type column, legal/registered rent, DHCR
+  // codes). Preserved so downstream consumers can interpret them; never
+  // interpreted by the engine itself.
+  sourceColumns?: SourceColumn[];
 
   // Additional fields (all optional)
   unitSqft: number | null;
@@ -194,9 +216,9 @@ export interface RentRollExtraction {
   status: 'processing' | 'review' | 'approved' | 'error';
 
   // Unit data
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
 
-  // Count validation (critical for MVP)
+  // Count validation (critical for count accuracy)
   statedUnitCount: number | null;  // From document if found
   extractedUnitCount: number;
   countMatch: boolean | null;  // null if stated count not found

@@ -14,7 +14,8 @@ One JSON file per corpus file: `eval/groundtruth/<corpus-id>.json`.
   "corpusId": "02__1565_2nd_Rent_Roll_-_Oct_2025.xlsx",
   // Fields the DOCUMENT actually provides per unit. Only these get graded.
   // Allowed: status, monthlyRent, tenantName, unitSqft, unitType,
-  //          leaseStartDate, leaseEndDate, moveInDate, moveOutDate
+  //          leaseStartDate, leaseEndDate, moveInDate, moveOutDate,
+  //          category, regulation
   "documentFields": ["status", "monthlyRent", "tenantName", "leaseEndDate"],
   "statedUnitCount": 16,          // total units stated IN the document, or null
   "statedTotalMonthlyRent": 41000.5, // stated total rent IN the document, or null
@@ -33,7 +34,20 @@ One JSON file per corpus file: `eval/groundtruth/<corpus-id>.json`.
       "leaseStartDate": "2024-06-01", // ISO YYYY-MM-DD, null if blank
       "leaseEndDate": "2025-05-31",
       "moveInDate": null,
-      "moveOutDate": null
+      "moveOutDate": null,
+      "category": "residential",    // OPTIONAL: 'residential' | 'commercial' |
+                                    // 'non_unit_income' (parking/antenna/laundry/
+                                    // storage/signage). Graded only when
+                                    // 'category' is in documentFields.
+      "regulation": "RS"            // OPTIONAL: the rent-regulation / lease-type
+                                    // value printed for this unit, VERBATIM
+                                    // ("RS", "FM", "Decontrolled", "MRKT", ...).
+                                    // Graded (when 'regulation' is in
+                                    // documentFields) by checking the parser
+                                    // preserved it in the unit's sourceColumns
+                                    // passthrough — the engine is NOT expected to
+                                    // interpret it. null when the document shows
+                                    // no regulation value for the unit.
     }
   ],
   "verification": {
@@ -86,6 +100,11 @@ Per file:
     ("VACANT", "AVAILABLE") are treated as null.
   - unitType: normalized loose match (case/punct-insensitive containment either way).
   - dates: exact ISO date equality.
+  - category: exact match of the extracted unit's `category` (null==null correct).
+  - regulation: passes when the GT verbatim value appears in the extracted unit's
+    `sourceColumns` (normalized equality/containment). Tests CAPTURE of the
+    regulation/lease-type column, not interpretation. A null GT value is trivially
+    correct (nothing to capture).
 - File accuracy = correct cells / total cells.
 - **Overall accuracy = macro average of file accuracies** (target >= 95%).
   Micro (cell-weighted) also reported.

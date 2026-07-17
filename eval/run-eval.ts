@@ -19,7 +19,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
 
 import { parseRentRoll } from '../src/lib/parsers';
 import { scoreFile, type GroundTruth, type FileScore } from './score';
-import type { MVPUnit } from '../src/lib/types';
+import type { GenericRentRollUnit } from '../src/lib/types';
 
 const CORPUS_DIR = path.join(__dirname, 'corpus');
 const GT_DIR = path.join(__dirname, 'groundtruth');
@@ -29,7 +29,7 @@ const RUN_DIR = process.env.EVAL_RUN_DIR
 
 interface CachedParse {
   corpusId: string;
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   modelUsed: string;
   inputTokens: number;

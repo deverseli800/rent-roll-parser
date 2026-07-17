@@ -54,7 +54,7 @@ import {
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, CellValueChangedEvent, GridApi } from 'ag-grid-community';
-import type { RentRollExtraction, MVPUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary, ProgressEvent } from '@/lib/types';
+import type { RentRollExtraction, GenericRentRollUnit, UnitStatus, ValidationIssue, SummaryStats, StatedSummaryStats, VerificationSummary, ExplanationSummary, ProgressEvent } from '@/lib/types';
 import { getExtraction, saveExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
 import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
 import { calculateSummaryStats, nonTenantRentFromUnits } from '@/lib/utils/summaryStats';
@@ -816,7 +816,7 @@ function SummaryStatsCard({
 }: {
   stats: SummaryStats | null;
   statedStats?: StatedSummaryStats | null;
-  units?: MVPUnit[];
+  units?: GenericRentRollUnit[];
 }) {
   if (!stats) {
     return null;
@@ -1104,11 +1104,11 @@ export default function ExtractionPage() {
   const [extraction, setExtraction] = useState<RentRollExtraction | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [units, setUnits] = useState<MVPUnit[]>([]);
+  const [units, setUnits] = useState<GenericRentRollUnit[]>([]);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [showAllColumns, setShowAllColumns] = useState(false);
   const [showHighlighting, setShowHighlighting] = useState(true);
-  const [newUnit, setNewUnit] = useState<Partial<MVPUnit>>({
+  const [newUnit, setNewUnit] = useState<Partial<GenericRentRollUnit>>({
     unitNumber: '',
     status: 'vacant',
     monthlyRent: null,
@@ -1323,7 +1323,7 @@ export default function ExtractionPage() {
     XLSX.writeFile(wb, fileName);
   };
 
-  const handleUnitChange = useCallback((index: number, field: keyof MVPUnit, value: unknown) => {
+  const handleUnitChange = useCallback((index: number, field: keyof GenericRentRollUnit, value: unknown) => {
     setUnits(prevUnits => {
       const newUnits = [...prevUnits];
       newUnits[index] = { ...newUnits[index], [field]: value };
@@ -1534,8 +1534,8 @@ export default function ExtractionPage() {
   }, [showHighlighting, highlights]);
 
   // AG Grid column definitions
-  const columnDefs = useMemo<ColDef<MVPUnit>[]>(() => {
-    const allColumns: (ColDef<MVPUnit> & { field?: string })[] = [
+  const columnDefs = useMemo<ColDef<GenericRentRollUnit>[]>(() => {
+    const allColumns: (ColDef<GenericRentRollUnit> & { field?: string })[] = [
       {
         field: 'unitNumber',
         headerName: 'Unit #',
@@ -1723,10 +1723,10 @@ export default function ExtractionPage() {
     tooltipShowDelay: 300,
   }), []);
 
-  const onCellValueChanged = useCallback((event: CellValueChangedEvent<MVPUnit>) => {
+  const onCellValueChanged = useCallback((event: CellValueChangedEvent<GenericRentRollUnit>) => {
     const { rowIndex, colDef, newValue } = event;
     if (rowIndex !== null && colDef.field) {
-      handleUnitChange(rowIndex, colDef.field as keyof MVPUnit, newValue);
+      handleUnitChange(rowIndex, colDef.field as keyof GenericRentRollUnit, newValue);
     }
   }, [handleUnitChange]);
 
@@ -1740,7 +1740,7 @@ export default function ExtractionPage() {
       return;
     }
 
-    setUnits([...units, newUnit as MVPUnit]);
+    setUnits([...units, newUnit as GenericRentRollUnit]);
     setNewUnit({
       unitNumber: '',
       status: 'vacant',
