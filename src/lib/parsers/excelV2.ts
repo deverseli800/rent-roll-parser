@@ -264,7 +264,7 @@ async function extractSheet(
     kind: 'info',
     message: `Analyzing the structure of sheet "${info.name}" (${info.rows} rows) for a deterministic fast-path read`,
   });
-  const fast = await tryFastPath(info.sheet, sampleGrid(info.text), usages, external);
+  const { result: fast, reason: fastReason } = await tryFastPath(info.sheet, sampleGrid(info.text), usages, external);
   if (fast) {
     report?.('extracting', `sheet "${info.name}" — fast path`, {
       kind: 'fastpath',
@@ -274,7 +274,7 @@ async function extractSheet(
   }
   report?.('extracting', `sheet "${info.name}" — full AI extraction`, {
     kind: 'fastpath',
-    message: `Fast path not viable for "${info.name}" (layout unsupported or totals didn't reconcile) — using the AI model ladder`,
+    message: `Fast path not viable for "${info.name}"${fastReason ? ` — ${fastReason.slice(0, 180)}` : ''} — using the AI model ladder`,
   });
 
   // The sheet grid leads and is cache-marked: the stated-summary preview call
