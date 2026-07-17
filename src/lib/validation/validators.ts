@@ -1,15 +1,15 @@
-import type { MVPUnit, ValidationIssue, StatedSummaryStats, SummaryStats } from '../types';
+import type { GenericRentRollUnit, ValidationIssue, StatedSummaryStats, SummaryStats } from '../types';
 import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '../utils/occupancy';
 
 /**
- * MVP Validation - Focused on unit count accuracy
+ * Rent-roll validation - focused on unit count accuracy
  * These validators ensure we don't miss units or hallucinate extras
  */
 
 /**
  * Detect duplicate unit numbers
  */
-export function detectDuplicates(units: MVPUnit[]): ValidationIssue[] {
+export function detectDuplicates(units: GenericRentRollUnit[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const seen = new Map<string, number[]>();
 
@@ -41,7 +41,7 @@ export function detectDuplicates(units: MVPUnit[]): ValidationIssue[] {
  * Only flags gaps when there's a clear sequential pattern (>80% consecutive)
  * Many buildings intentionally skip numbers, so we're conservative here
  */
-export function detectGaps(units: MVPUnit[]): ValidationIssue[] {
+export function detectGaps(units: GenericRentRollUnit[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
   // Extract numeric portions of unit numbers
@@ -137,7 +137,7 @@ export function checkCountMismatch(
 /**
  * Check for units with missing unit numbers
  */
-export function checkMissingUnitNumbers(units: MVPUnit[]): ValidationIssue[] {
+export function checkMissingUnitNumbers(units: GenericRentRollUnit[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
   units.forEach((unit, index) => {
@@ -157,7 +157,7 @@ export function checkMissingUnitNumbers(units: MVPUnit[]): ValidationIssue[] {
 /**
  * Check for suspicious patterns that might indicate extraction errors
  */
-export function checkSuspiciousPatterns(units: MVPUnit[]): ValidationIssue[] {
+export function checkSuspiciousPatterns(units: GenericRentRollUnit[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
   // Check for occupied units with no rent
@@ -327,10 +327,10 @@ export function checkSummaryMismatch(
 }
 
 /**
- * Run all MVP validations
+ * Run all validations
  */
 export function validateExtraction(
-  units: MVPUnit[],
+  units: GenericRentRollUnit[],
   statedCount: number | null,
   statedStats?: StatedSummaryStats | null,
   calculatedStats?: SummaryStats | null

@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import type { RentRollExtraction, MVPUnit } from '../types';
+import type { RentRollExtraction, GenericRentRollUnit } from '../types';
 
 /**
  * Column headers matching the vendor format (RRTable)
@@ -64,7 +64,7 @@ function dateToExcelSerial(dateStr: string | null): number | null {
 /**
  * Convert a unit to a row in the vendor format
  */
-function unitToRow(unit: MVPUnit): (string | number | null)[] {
+function unitToRow(unit: GenericRentRollUnit): (string | number | null)[] {
   return [
     unit.unitNumber,                          // Unit #
     unit.unitType,                            // Unit Type

@@ -1,8 +1,9 @@
 {
-  "_comment": "Named eval subsets. Usage: npx tsx eval/run-eval.ts --set core. 'core' covers every format family + the historically variance-prone files (~1.2M tokens vs ~6M for the full corpus). 'smoke' is a 5-minute sanity check (~150K tokens).",
+  "_comment": "Named eval subsets. Usage: npx tsx eval/run-eval.ts --set core. 'core' covers every format family + the historically variance-prone files (~1.2M tokens vs ~6M for the full corpus). 'smoke' is a 5-minute sanity check (~150K tokens). 'nyc' targets the passthrough fields (category + verbatim regulation captured in sourceColumns) on NYC rent rolls with explicit regulation columns.",
   "smoke": ["02", "19", "48", "83", "84"],
   "core": [
     "02", "07", "09", "15", "24", "28", "33", "34",
     "42", "53", "58", "61", "65", "74", "80", "84"
-  ]
+  ],
+  "nyc": ["02", "47", "48", "85"]
 }

@@ -1,12 +1,12 @@
 import * as XLSX from 'xlsx';
-import type { MVPUnit, StatedSummaryStats } from '../types';
+import type { GenericRentRollUnit, StatedSummaryStats } from '../types';
 import { extractStructured, MODELS, sumUsage, type AIUsage } from './aiClient';
 import { tryFastPath } from './excelFastPath';
 import {
   EXTRACTION_RULES,
   extractStatedPreview,
   runExtractionLadder,
-  toMVPUnits,
+  toGenericRentRollUnits,
   toStatedSummaryStats,
   type ChunkingOptions,
   type ExtractionResult,
@@ -290,7 +290,7 @@ async function extractSheet(
 }
 
 export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): Promise<{
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   statedSummaryStats: StatedSummaryStats | null;
   propertyName: string | null;
@@ -401,9 +401,9 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
   // Merge results across sheets. Units are NOT deduped across sheets —
   // different buildings can share unit numbers.
   const kept = results.filter((_, i) => keep[i]);
-  const units: MVPUnit[] = [];
+  const units: GenericRentRollUnit[] = [];
   for (const r of kept) {
-    units.push(...toMVPUnits(r.units));
+    units.push(...toGenericRentRollUnits(r.units));
   }
   units.forEach((u, i) => { u.sourceRow = i + 1; });
 

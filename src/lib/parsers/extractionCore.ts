@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { MVPUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
+import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
 import { extractStructured, MaxTokensError, MODELS, modelLabel, type AIUsage } from './aiClient';
 import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount } from '../utils/occupancy';
 
@@ -54,12 +54,24 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
         // this object to 11 optional keys and timed out compilation on the
         // fast model), while required-nullable keys compile like the original
         // schema. Union budget: 14 of the 16 allowed union-typed parameters.
-        required: ['unitNumber', 'status', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName'],
+        // category/includeInUnitCount/sourceColumns are REQUIRED (non-null /
+        // array) on purpose: they cost the grammar no extra union-typed params
+        // (see the union-budget note above), whereas nullable/optional would.
+        required: ['unitNumber', 'status', 'category', 'includeInUnitCount', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'sourceColumns'],
         properties: {
           unitNumber: { type: 'string' },
           status: {
             type: 'string',
             enum: ['occupied', 'vacant', 'notice', 'model', 'down', 'applicant'],
+          },
+          category: {
+            type: 'string',
+            enum: ['residential', 'commercial', 'non_unit_income'],
+            description: 'What the row IS (factual, not a legal/regulatory status): a dwelling, a commercial suite, or an ancillary income line (parking/antenna/laundry/storage/signage)',
+          },
+          includeInUnitCount: {
+            type: 'boolean',
+            description: 'true for residential/commercial units; false for non_unit_income line items',
           },
           monthlyRent: { type: ['number', 'null'] },
           marketRent: { type: ['number', 'null'], description: 'Market/asking rent; null when the document has no market rent column' },
@@ -74,6 +86,19 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
           moveOutDate: { type: ['string', 'null'] },
           leaseStartDate: { type: ['string', 'null'] },
           leaseEndDate: { type: ['string', 'null'] },
+          sourceColumns: {
+            type: 'array',
+            description: 'Verbatim passthrough of any per-unit column NOT mapped to a field above (e.g. rent-regulation/lease-type, legal/registered/preferential rent, DHCR codes). Copy header and value exactly; do not interpret.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['header', 'value'],
+              properties: {
+                header: { type: 'string' },
+                value: { type: 'string' },
+              },
+            },
+          },
         },
       },
     },
@@ -83,6 +108,9 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
 export interface ExtractedUnit {
   unitNumber: string;
   status: UnitStatus;
+  category: 'residential' | 'commercial' | 'non_unit_income';
+  includeInUnitCount: boolean;
+  sourceColumns: { header: string; value: string }[];
   monthlyRent: number | null;
   marketRent?: number | null;
   subsidyRent?: number | null;
@@ -171,6 +199,13 @@ FIELD RULES:
 - unitSqft: number or null.
 - Dates (moveInDate, moveOutDate, leaseStartDate, leaseEndDate): ISO YYYY-MM-DD or null.
 - leaseStatus: the raw status text from the document if a status column exists, else null.
+- category: classify what the row IS (one of):
+    "residential" — a dwelling unit: apartment, condo, house, including superintendent/employee units and rent-regulated apartments.
+    "commercial" — a non-dwelling leasable space: store, retail, office, professional, restaurant, medical, etc.
+    "non_unit_income" — an ancillary income line that is neither a dwelling nor a commercial suite: parking spaces/garages, antennas/cell towers, laundry, storage rented as income, signage/billboards.
+  Classify by the document's own use/type labels. This is FACTUAL, not a legal or regulatory status: a rent-stabilized apartment is still "residential".
+- includeInUnitCount: true for residential and commercial units; false for non_unit_income line items. (Lets a consumer count dwelling+commercial units without the ancillary income rows.)
+- sourceColumns: a VERBATIM passthrough of any per-unit column present in the document that you did NOT already map to one of the fields above. For each such column with a non-empty value for this unit, add an entry { "header": <column header text, verbatim>, "value": <cell value, verbatim as a string> }. This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE/DRIE", "Preferential"), any legal / registered / preferential rent column, DHCR status codes, and any other unmapped column. Copy header and value EXACTLY as printed — do NOT interpret, normalize, translate codes, expand abbreviations, or infer meaning. Skip columns already captured by a mapped field (rent, tenant, sqft, type, dates, etc.). Return [] only when there are no unmapped columns.
 - Use null for any field the document does not provide. NEVER guess values.
 - CONSISTENCY OVER LENGTH: in long documents, populate every field for EVERY unit through the very last page/row. Do not stop filling optional fields (dates, sqft, type) partway through.
 
@@ -217,11 +252,13 @@ function cleanPlaceholder(value: string | null | undefined): string | null {
   return s;
 }
 
-/** Convert an ExtractionResult's units to MVPUnit[] */
-export function toMVPUnits(units: ExtractedUnit[], sourcePage?: number): MVPUnit[] {
+/** Convert an ExtractionResult's units to GenericRentRollUnit[] */
+export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: number): GenericRentRollUnit[] {
   return units.map((u, i) => ({
     unitNumber: String(u.unitNumber).trim(),
     status: normalizeStatus(u.status),
+    category: u.category ?? null,
+    includeInUnitCount: u.includeInUnitCount ?? null,
     monthlyRent: u.monthlyRent ?? null,
     marketRent: u.marketRent ?? null,
     subsidyRent: u.subsidyRent ?? null,
@@ -236,6 +273,7 @@ export function toMVPUnits(units: ExtractedUnit[], sourcePage?: number): MVPUnit
     leaseStartDate: u.leaseStartDate ?? null,
     leaseEndDate: u.leaseEndDate ?? null,
     sourceRow: i + 1,
+    ...(u.sourceColumns && u.sourceColumns.length ? { sourceColumns: u.sourceColumns } : {}),
     ...(sourcePage !== undefined ? { sourcePage } : {}),
   }));
 }

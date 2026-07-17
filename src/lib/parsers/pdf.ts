@@ -1,13 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { MVPUnit, UnitStatus, StatedSummaryStats } from '../types';
+import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats } from '../types';
 import { ClaudeExtractionResponseSchema } from '../validation/schema';
 
 /**
- * MVP PDF Parser using Claude Vision API
+ * PDF Parser using Claude Vision API (legacy v1)
  * Focused on accurate unit count extraction - no missing or hallucinated units
  */
 
-const MVP_EXTRACTION_PROMPT = `You are extracting unit data from a rent roll document. Your PRIMARY goal is accurate unit count - do not miss ANY units and do not hallucinate units that don't exist.
+const VISION_EXTRACTION_PROMPT = `You are extracting unit data from a rent roll document. Your PRIMARY goal is accurate unit count - do not miss ANY units and do not hallucinate units that don't exist.
 
 STEP 1: Look for STATED SUMMARY VALUES in the document. These are typically in:
 - Header/footer sections (e.g., "Total Units: 156")
@@ -123,7 +123,7 @@ function bufferToBase64(buffer: Buffer): string {
  * Parse PDF using Claude Vision API
  */
 export async function parsePDF(buffer: Buffer): Promise<{
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   statedSummaryStats: StatedSummaryStats | null;
   propertyName: string | null;
@@ -164,7 +164,7 @@ export async function parsePDF(buffer: Buffer): Promise<{
               },
               {
                 type: 'text',
-                text: MVP_EXTRACTION_PROMPT,
+                text: VISION_EXTRACTION_PROMPT,
               },
             ],
           },
@@ -192,8 +192,8 @@ export async function parsePDF(buffer: Buffer): Promise<{
     // Validate with Zod schema
     const validated = ClaudeExtractionResponseSchema.parse(parsed);
 
-    // Convert to MVPUnit format
-    const units: MVPUnit[] = validated.units.map((unit, index) => ({
+    // Convert to GenericRentRollUnit format
+    const units: GenericRentRollUnit[] = validated.units.map((unit, index) => ({
       unitNumber: unit.unitNumber,
       status: normalizeStatus(unit.status),
       monthlyRent: unit.monthlyRent ?? null,
@@ -271,7 +271,7 @@ export async function parsePDF(buffer: Buffer): Promise<{
                 },
                 {
                   type: 'text',
-                  text: MVP_EXTRACTION_PROMPT,
+                  text: VISION_EXTRACTION_PROMPT,
                 },
               ],
             },
@@ -295,7 +295,7 @@ export async function parsePDF(buffer: Buffer): Promise<{
       const parsed = JSON.parse(jsonMatch[0]);
       const validated = ClaudeExtractionResponseSchema.parse(parsed);
 
-      const units: MVPUnit[] = validated.units.map((unit, index) => ({
+      const units: GenericRentRollUnit[] = validated.units.map((unit, index) => ({
         unitNumber: unit.unitNumber,
         status: normalizeStatus(unit.status),
         monthlyRent: unit.monthlyRent ?? null,

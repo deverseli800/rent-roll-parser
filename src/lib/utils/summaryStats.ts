@@ -1,4 +1,4 @@
-import type { MVPUnit, SummaryStats } from '../types';
+import type { GenericRentRollUnit, SummaryStats } from '../types';
 import { aggregateCharges } from './chargeNormalization';
 
 /**
@@ -9,7 +9,7 @@ import { aggregateCharges } from './chargeNormalization';
  * Exported so the UI can compute it live from units even when a cached
  * record's summaryStats predates the nonTenantRent field.
  */
-export function nonTenantRentFromUnits(units: MVPUnit[]): number | null {
+export function nonTenantRentFromUnits(units: GenericRentRollUnit[]): number | null {
   const sum = units
     .filter(u => u.status !== 'occupied' && u.status !== 'notice' && u.monthlyRent !== null && u.monthlyRent > 0)
     .reduce((total, u) => total + (u.monthlyRent || 0), 0);
@@ -19,7 +19,7 @@ export function nonTenantRentFromUnits(units: MVPUnit[]): number | null {
 /**
  * Calculate summary statistics from extracted units
  */
-export function calculateSummaryStats(units: MVPUnit[]): SummaryStats {
+export function calculateSummaryStats(units: GenericRentRollUnit[]): SummaryStats {
   const totalUnits = units.length;
 
   // Count by status

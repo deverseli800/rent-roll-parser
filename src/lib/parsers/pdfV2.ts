@@ -1,12 +1,12 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { MVPUnit, StatedSummaryStats } from '../types';
+import type { GenericRentRollUnit, StatedSummaryStats } from '../types';
 import { sumUsage, type AIUsage } from './aiClient';
 import { estimateCostUSD } from '../utils/aiCost';
 import {
   EXTRACTION_RULES,
   extractStatedPreview,
   runExtractionLadder,
-  toMVPUnits,
+  toGenericRentRollUnits,
   toStatedSummaryStats,
   type ChunkingOptions,
   type ProgressReporter,
@@ -36,7 +36,7 @@ Additional guidance for PDFs:
 - Reports with per-unit charge line items (RENT, SEC8, PREF, PARKING...): the unit's monthlyRent is its primary monthly rent charge (codes like rent/comm/vacant), not the sum of all charges.`;
 
 export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Promise<{
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   statedSummaryStats: StatedSummaryStats | null;
   propertyName: string | null;
@@ -97,7 +97,7 @@ export async function parsePDFV2(buffer: Buffer, report?: ProgressReporter): Pro
   const r = await runExtractionLadder(content, usages, report, 'PDF', chunking);
   const usage = sumUsage(usages);
   return {
-    units: toMVPUnits(r.units, 1),
+    units: toGenericRentRollUnits(r.units, 1),
     statedUnitCount: r.statedTotalUnits ?? null,
     statedSummaryStats: toStatedSummaryStats(r),
     propertyName: r.propertyName ?? null,

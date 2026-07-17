@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import type { MVPUnit, UnitStatus, StatedSummaryStats, UnitCharge } from '../types';
+import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats, UnitCharge } from '../types';
 import { ClaudeExtractionResponseSchema } from '../validation/schema';
 import { createCharge } from '../utils/chargeNormalization';
 
@@ -741,7 +741,7 @@ async function parseExcelWithFullAI(
   sheet: XLSX.WorkSheet,
   detectionReasons: string[]
 ): Promise<{
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   statedSummaryStats: StatedSummaryStats | null;
   format: string;
@@ -808,8 +808,8 @@ Return ONLY valid JSON in this exact format:
   const parsed = JSON.parse(jsonMatch[0]);
   const validated = ClaudeExtractionResponseSchema.parse(parsed);
 
-  // Convert to MVPUnit format
-  const units: MVPUnit[] = validated.units.map((unit, index) => ({
+  // Convert to GenericRentRollUnit format
+  const units: GenericRentRollUnit[] = validated.units.map((unit, index) => ({
     unitNumber: unit.unitNumber,
     status: normalizeStatus(unit.status),
     monthlyRent: unit.monthlyRent ?? null,
@@ -856,7 +856,7 @@ Return ONLY valid JSON in this exact format:
  * Parse Excel file using AI-assisted column mapping
  */
 export async function parseExcel(buffer: Buffer): Promise<{
-  units: MVPUnit[];
+  units: GenericRentRollUnit[];
   statedUnitCount: number | null;
   statedSummaryStats: StatedSummaryStats | null;
   format: string;
@@ -889,7 +889,7 @@ export async function parseExcel(buffer: Buffer): Promise<{
 
   // Extract all data using the AI-provided mapping
   const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-  const units: MVPUnit[] = [];
+  const units: GenericRentRollUnit[] = [];
   const seenUnits = new Set<string>();
 
   // Default skip patterns + AI-provided ones
@@ -985,7 +985,7 @@ export async function parseExcel(buffer: Buffer): Promise<{
       }
     }
 
-    const unit: MVPUnit = {
+    const unit: GenericRentRollUnit = {
       unitNumber,
       status,
       monthlyRent,

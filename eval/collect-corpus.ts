@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
-const APPRAISALS_DIR = './data/source-documents';
+const APPRAISALS_DIR = process.env.APPRAISALS_DIR || './data/source-documents';
 const CORPUS_DIR = path.join(__dirname, 'corpus');
 const MANIFEST_PATH = path.join(__dirname, 'corpus-manifest.json');
 
