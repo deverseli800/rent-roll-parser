@@ -133,6 +133,8 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
 
 const MAPPER_PROMPT = `You are analyzing the STRUCTURE of a rent roll Excel sheet so deterministic code can extract every unit. You see the first rows, a middle sample, and the last rows (rows labeled "R<n>:", cells separated by " | "; cell indices are 0-based counting each " | "-separated cell).
 
+IMPORTANT: header cells are often MERGED, so a header label's cell index can be SHIFTED relative to where the values sit on data rows (e.g. header "End Date" at index 19 while the dates appear at index 17). Derive EVERY column index from the DATA rows — the cells where values actually appear — and use the header row only to understand what each data column means. When header and data indices disagree, the data rows win.
+
 Decide:
 1. layout:
    - "row": one row per unit.
@@ -502,6 +504,35 @@ export function applyStructure(
  * unsupported or the deterministic result fails verification against the
  * document's stated totals — callers then use the full-AI ladder.
  */
+/**
+ * Coverage gate: count/rent verification cannot see a silently blanked column
+ * (e.g. a lease-end column whose merged header cell sits at a different index
+ * than its data). If the header region clearly shows a column but the walk
+ * filled it for almost no units, the mapping is wrong — reject the fast result.
+ * Returns the failure description, or null when coverage looks sane.
+ */
+function coverageIssue(result: ExtractionResult, sampleText: string): string | null {
+  const head = sampleText.slice(0, 8000).toLowerCase();
+  const occ = result.units.filter(u => u.status === 'occupied' || u.status === 'notice');
+  const fill = (arr: typeof result.units, f: keyof ExtractedUnit) =>
+    arr.length === 0 ? 1 : arr.filter(u => u[f] !== null && u[f] !== undefined && u[f] !== '').length / arr.length;
+  // moveOutDate is excluded: it is legitimately near-empty on healthy rolls.
+  const checks: { field: keyof ExtractedUnit; pattern: RegExp; pool: typeof result.units }[] = [
+    { field: 'leaseStartDate', pattern: /(lease\s*(start|from|begin)|lease\s*dates)/, pool: occ },
+    { field: 'leaseEndDate', pattern: /(lease\s*(end|to|exp)|expir|end\s*date)/, pool: occ },
+    { field: 'moveInDate', pattern: /move[\s-]*in/, pool: occ },
+    { field: 'unitSqft', pattern: /(sq\.?\s*ft|sqft|square\s*(feet|footage)|\bsf\b)/, pool: result.units },
+    { field: 'unitType', pattern: /(unit\s*type|floor\s*plan|floorplan|bd\/ba|bed|type:)/, pool: result.units },
+  ];
+  for (const c of checks) {
+    if (c.pool.length < 20) continue; // too few rows to call near-zero fill damning
+    if (c.pattern.test(head) && fill(c.pool, c.field) < 0.05) {
+      return `the header shows a ${c.field} column but the deterministic read left it empty for ${c.pool.length} units — the column index is likely misaligned (merged header cells)`;
+    }
+  }
+  return null;
+}
+
 export async function tryFastPath(
   sheet: XLSX.WorkSheet,
   sampleText: string,
@@ -534,7 +565,13 @@ export async function tryFastPath(
         // The fast path must PROVE itself against stated anchors. A rent total
         // alone cannot catch a dropped null-rent unit (e.g. a vacant retail
         // row), so specifically require a stated unit COUNT.
-        if (verification.ok && result.statedTotalUnits !== null) return { result };
+        if (verification.ok && result.statedTotalUnits !== null) {
+          const gap = coverageIssue(result, sampleText);
+          if (!gap) return { result };
+          reason = gap; // feeds the retry hint — a remapped attempt may fix it
+          anchored = true;
+          continue;
+        }
         anchored = anchored || result.statedTotalUnits !== null;
         reason = result.statedTotalUnits === null
           ? 'the document states no unit count to prove the deterministic read against'
