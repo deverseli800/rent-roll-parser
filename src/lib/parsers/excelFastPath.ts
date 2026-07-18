@@ -298,7 +298,12 @@ export async function mapSheetStructure(
     model: MODELS.fast,
     content: [{ type: 'text', text: `${MAPPER_PROMPT}\n\n${sampleText}` }],
     schema: STRUCTURE_SCHEMA,
-    maxTokens: 16000,
+    // Adaptive thinking shares this budget, and the mapper's reasoning load
+    // scales with the charge-code inventory + extraColumns enumeration; 16K
+    // truncated on charge-heavy institutional sheets (which then lose the
+    // fast path entirely). Generous cap: every observed overflow was a
+    // legitimately hard sheet, not a runaway.
+    maxTokens: 60000,
   });
   // Normalize -1 sentinels (schema union-count workaround) back to null.
   const norm = (v: number | null) => (v === null || v < 0 ? null : v);
