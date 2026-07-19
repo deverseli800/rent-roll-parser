@@ -525,9 +525,11 @@ function coverageIssue(result: ExtractionResult, sampleText: string): string | n
     { field: 'unitType', pattern: /(unit\s*type|floor\s*plan|floorplan|bd\/ba|bed|type:)/, pool: result.units },
   ];
   for (const c of checks) {
-    if (c.pool.length < 20) continue; // too few rows to call near-zero fill damning
-    if (c.pattern.test(head) && fill(c.pool, c.field) < 0.05) {
-      return `the header shows a ${c.field} column but the deterministic read left it empty for ${c.pool.length} units — the column index is likely misaligned (merged header cells)`;
+    if (c.pool.length < 10) continue; // too few rows to judge fill rates
+    // A correctly-mapped advertised column is essentially never this sparse;
+    // a false trip merely demotes the file to the slower AI ladder.
+    if (c.pattern.test(head) && fill(c.pool, c.field) < 0.25) {
+      return `the header shows a ${c.field} column but the deterministic read filled it for under 25% of ${c.pool.length} units — the column index is likely wrong or misaligned (merged header cells)`;
     }
   }
   return null;
