@@ -52,3 +52,8 @@ eval/corpus/
 eval/previews/
 eval/groundtruth/
 eval/runs/
+
+# Eval bookkeeping artifacts: reference real property files/addresses — keep local
+# (regenerated locally by collect-corpus.ts / preview-corpus.ts)
+eval/corpus-manifest.json
+eval/previews-summary.txt
