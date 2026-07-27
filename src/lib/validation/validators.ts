@@ -174,6 +174,23 @@ export function checkSuspiciousPatterns(units: GenericRentRollUnit[]): Validatio
     });
   }
 
+  // Unit type duplicating the rent (e.g. unitType "3699" with rent 3699) means the
+  // source sheet's unit-type column was corrupted by a wrong-column formula fill —
+  // the extraction likely came from a broken derived tab instead of the source view.
+  const typeEqualsRent = units.filter(u => {
+    if (u.unitType === null || u.monthlyRent === null || u.monthlyRent === 0) return false;
+    const typeNum = Number(u.unitType.replace(/[$,\s]/g, ''));
+    return Number.isFinite(typeNum) && Math.abs(typeNum - u.monthlyRent) < 0.005;
+  });
+  if (typeEqualsRent.length >= 3) {
+    issues.push({
+      type: 'suspicious',
+      severity: 'critical',
+      message: `${typeEqualsRent.length} unit(s) have a unit type equal to their rent (e.g. "${typeEqualsRent[0].unitNumber}" type "${typeEqualsRent[0].unitType}") — the source sheet's unit-type column looks corrupted; another tab in the workbook may hold the clean original`,
+      unitNumbers: typeEqualsRent.map(u => u.unitNumber),
+    });
+  }
+
   // Check for very high unit numbers that might indicate charge codes being counted as units
   const suspiciouslyHigh = units.filter(u => {
     const num = parseInt(u.unitNumber.replace(/\D/g, ''), 10);
