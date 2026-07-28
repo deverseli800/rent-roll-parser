@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
 import { extractStructured, MaxTokensError, MODELS, modelLabel, type AIUsage } from './aiClient';
-import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount } from '../utils/occupancy';
+import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileUnitCount } from '../utils/occupancy';
 
 /**
  * Shared extraction schema, prompt, normalization, and self-verification
@@ -53,13 +53,17 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
         // OPTIONAL properties in a strict object (making them optional pushed
         // this object to 11 optional keys and timed out compilation on the
         // fast model), while required-nullable keys compile like the original
-        // schema. Union budget: 14 of the 16 allowed union-typed parameters.
+        // schema. Union budget: 15 of the 16 allowed union-typed parameters.
         // category/includeInUnitCount/sourceColumns are REQUIRED (non-null /
         // array) on purpose: they cost the grammar no extra union-typed params
         // (see the union-budget note above), whereas nullable/optional would.
-        required: ['unitNumber', 'status', 'category', 'includeInUnitCount', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'sourceColumns'],
+        required: ['unitNumber', 'building', 'status', 'category', 'includeInUnitCount', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'sourceColumns'],
         properties: {
           unitNumber: { type: 'string' },
+          building: {
+            type: ['string', 'null'],
+            description: 'For documents covering multiple buildings/properties: the building/property this unit belongs to, exactly as its section is labeled. null for single-property documents.',
+          },
           status: {
             type: 'string',
             enum: ['occupied', 'vacant', 'notice', 'model', 'down', 'applicant'],
@@ -107,6 +111,7 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
 
 export interface ExtractedUnit {
   unitNumber: string;
+  building?: string | null;
   status: UnitStatus;
   category: 'residential' | 'commercial' | 'non_unit_income';
   includeInUnitCount: boolean;
@@ -194,6 +199,7 @@ FIELD RULES:
 - concession: a recurring monthly concession/credit shown for the unit (charge codes like "CONC",
   "Concession", "Rent Credit"). Keep the sign as displayed (usually negative). Do NOT subtract
   concessions from monthlyRent — report them separately. null when none.
+- building: when the document covers MORE THAN ONE building/property, the building this unit belongs to, exactly as its section is labeled (e.g. "124 Ludlow Street"). null for single-property documents.
 - tenantName: as displayed ("Last, First" stays "Last, First"). Placeholder text like "VACANT" -> null.
 - unitType: copy the EXACT text shown (e.g. "4/1" stays "4/1" — do NOT expand to "4BR/1BA"; "2/1.00" stays "2/1.00"). If the document has ANY unit type / floorplan / bedrooms-baths / use-type column, ALWAYS populate unitType from it for every unit (commercial use codes like "CM" or "Store" count). null only when no such column exists.
 - unitSqft: number or null.
@@ -211,7 +217,7 @@ FIELD RULES:
 
 DUPLICATES: if the same unit appears on multiple rows (e.g., current resident + applicant, or vacant + pending lease), output it ONCE using the row that describes CURRENT occupancy (prefer occupied/notice over applicant over vacant).
 
-MULTI-PROPERTY DOCUMENTS: some documents cover multiple buildings/properties. Extract units from ALL of them. Different buildings can each have a unit "1A" — that is not a duplicate; output both.
+MULTI-PROPERTY DOCUMENTS: some documents cover multiple buildings/properties. Extract units from ALL of them. Different buildings can each have a unit "1A" — that is not a duplicate; output both, each with its building field set so they stay distinguishable.
 
 STATED TOTALS: separately report any totals STATED in the document itself (total unit count, total monthly rent, occupancy) in statedTotalUnits/statedSummary. These must come from the document text, not from your own arithmetic. If the document states an ANNUAL total rent, convert to monthly (divide by 12). If multiple properties each state totals, sum them. When the document shows MULTIPLE total figures, statedSummary.totalMonthlyRent must be the total of CURRENT/ACTUAL RENT — the figure matching the rent column you extracted per unit — NOT a market/potential/scheduled rent total, and NOT a total-charges figure that adds fees (trash, pet, parking) on top of rent. A stated market/potential/scheduled rent total goes in statedSummary.totalMarketRent instead; if the document states ONLY a market-rent total and no actual-rent total, put it in totalMarketRent and report totalMonthlyRent as -1. occupiedUnits/vacantUnits must be PHYSICAL-occupancy counts: a "Units Available"/"Available" figure is a leased-status metric, NOT a vacancy count — never report it as vacantUnits (use an explicitly vacant-labeled count, summing vacant statuses like "Vacant Leased" + "Vacant Not Leased" when a breakdown is given; else report -1). For statedTotalUnits and every statedSummary field, report -1 when the document does not state that value (do NOT compute it yourself; -1 means "not stated").
 
@@ -256,6 +262,7 @@ function cleanPlaceholder(value: string | null | undefined): string | null {
 export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: number): GenericRentRollUnit[] {
   return units.map((u, i) => ({
     unitNumber: String(u.unitNumber).trim(),
+    building: cleanPlaceholder(u.building),
     status: normalizeStatus(u.status),
     category: u.category ?? null,
     includeInUnitCount: u.includeInUnitCount ?? null,
@@ -450,17 +457,17 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
   const issues: string[] = [];
   let hasStatedAnchors = false;
 
+  let countMatches = false;
   if (r.statedTotalUnits !== null && r.statedTotalUnits > 0) {
     hasStatedAnchors = true;
-    if (r.units.length !== r.statedTotalUnits) {
+    const countRec = reconcileUnitCount(r.statedTotalUnits, r.units);
+    countMatches = countRec.ok;
+    if (!countRec.ok) {
       issues.push(
         `Document states ${r.statedTotalUnits} total units but ${r.units.length} were extracted`
       );
     }
   }
-
-  const countMatches =
-    r.statedTotalUnits !== null && r.units.length === r.statedTotalUnits;
 
   const statedRent = r.statedSummary?.totalMonthlyRent ?? null;
   const statedMarket = r.statedSummary?.totalMarketRent ?? null;
@@ -621,7 +628,7 @@ export interface ChunkingOptions {
  * differ in tenant/rent, so the composite key keeps them. */
 function chunkDedupeKey(u: ExtractedUnit): string {
   const num = String(u.unitNumber).toUpperCase().replace(/[#\s.,_/\\-]+/g, '');
-  return `${num}|${(u.tenantName ?? '').toUpperCase().trim()}|${u.monthlyRent ?? ''}`;
+  return `${(u.building ?? '').toUpperCase().trim()}|${num}|${(u.tenantName ?? '').toUpperCase().trim()}|${u.monthlyRent ?? ''}`;
 }
 
 /**

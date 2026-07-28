@@ -39,6 +39,7 @@ export interface SourceColumn {
 
 export interface GenericRentRollUnit {
   unitNumber: string;
+  building?: string | null;  // Building/property for multi-building documents; null when single-property
   status: UnitStatus;
   monthlyRent: number | null;
   tenantName: string | null;
