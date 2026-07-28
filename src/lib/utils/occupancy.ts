@@ -20,6 +20,34 @@
  *   - extraction page Summary Statistics  (stated vs calculated comparison)
  */
 
+export interface UnitCountReconciliation {
+  ok: boolean;
+  /** Which reading of the stated count matched: every extracted row, unit rows
+   * only (excluding non_unit_income lines), or residential units only. */
+  interpretation: 'all' | 'counted_units' | 'residential_only' | null;
+}
+
+/**
+ * A document's stated unit count doesn't always cover every extracted row:
+ * mixed-use summaries often state the residential-only count ("41 units" plus
+ * 4 stores extracted separately), and some totals exclude ancillary income
+ * lines. Accept the stated count when it exactly matches one of those narrower
+ * readings instead of failing — and re-extracting — a correct result.
+ */
+export function reconcileUnitCount(
+  stated: number,
+  units: { category?: string | null; includeInUnitCount?: boolean | null }[]
+): UnitCountReconciliation {
+  if (units.length === stated) return { ok: true, interpretation: 'all' };
+  const counted = units.filter(u => u.includeInUnitCount !== false).length;
+  if (counted === stated) return { ok: true, interpretation: 'counted_units' };
+  const residential = units.filter(u => u.category === 'residential').length;
+  if (residential > 0 && residential < units.length && residential === stated) {
+    return { ok: true, interpretation: 'residential_only' };
+  }
+  return { ok: false, interpretation: null };
+}
+
 export interface StatusCounts {
   occupied: number;
   vacant: number;

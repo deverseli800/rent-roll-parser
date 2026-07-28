@@ -5,7 +5,7 @@ import type {
   VerificationCheck,
   VerificationSummary,
 } from '../types';
-import { reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '../utils/occupancy';
+import { reconcileOccupiedCount, reconcileTotalRent, reconcileUnitCount, reconcileVacantCount } from '../utils/occupancy';
 
 /**
  * Run all verification checks and return a summary
@@ -20,7 +20,7 @@ export function runVerificationChecks(
   const checks: VerificationCheck[] = [];
 
   // Check 1: Unit count matches stated count
-  checks.push(checkUnitCount(units.length, statedUnitCount));
+  checks.push(checkUnitCount(units, statedUnitCount));
 
   // Check 2: No duplicate unit numbers
   checks.push(checkNoDuplicates(units));
@@ -89,9 +89,10 @@ export function runVerificationChecks(
 }
 
 function checkUnitCount(
-  extractedCount: number,
+  units: GenericRentRollUnit[],
   statedCount: number | null
 ): VerificationCheck {
+  const extractedCount = units.length;
   if (statedCount === null) {
     return {
       id: 'unit-count',
@@ -102,13 +103,20 @@ function checkUnitCount(
     };
   }
 
-  if (extractedCount === statedCount) {
+  const rec = reconcileUnitCount(statedCount, units);
+  if (rec.ok) {
+    const how =
+      rec.interpretation === 'all'
+        ? 'matches stated count'
+        : rec.interpretation === 'residential_only'
+          ? `stated count matches the ${statedCount} residential units (remainder is commercial/other)`
+          : `stated count matches the ${statedCount} unit rows (remainder is ancillary income lines)`;
     return {
       id: 'unit-count',
       name: 'Unit Count',
       description: 'Extracted count matches stated count in document',
       status: 'passed',
-      details: `${extractedCount} units extracted, matches stated count`,
+      details: `${extractedCount} units extracted, ${how}`,
     };
   }
 
@@ -126,10 +134,12 @@ function checkNoDuplicates(units: GenericRentRollUnit[]): VerificationCheck {
   const seen = new Set<string>();
   const duplicates: string[] = [];
 
+  // Key on building + unit: multi-building documents legitimately repeat unit
+  // numbers across buildings ("1A" in both 122 and 124).
   for (const unit of units) {
-    const normalized = unit.unitNumber.trim().toUpperCase();
+    const normalized = `${(unit.building ?? '').trim().toUpperCase()}|${unit.unitNumber.trim().toUpperCase()}`;
     if (seen.has(normalized)) {
-      duplicates.push(unit.unitNumber);
+      duplicates.push(unit.building ? `${unit.building} ${unit.unitNumber}` : unit.unitNumber);
     }
     seen.add(normalized);
   }

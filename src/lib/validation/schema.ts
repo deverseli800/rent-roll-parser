@@ -13,6 +13,7 @@ export const UnitStatusSchema = z.enum([
 
 export const GenericRentRollUnitSchema = z.object({
   unitNumber: z.string().min(1, "Unit number is required"),
+  building: z.string().nullable().optional(),
   status: UnitStatusSchema,
   monthlyRent: z.number().nullable(),
   tenantName: z.string().nullable(),

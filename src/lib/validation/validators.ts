@@ -1,5 +1,5 @@
 import type { GenericRentRollUnit, ValidationIssue, StatedSummaryStats, SummaryStats } from '../types';
-import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '../utils/occupancy';
+import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileUnitCount, reconcileVacantCount } from '../utils/occupancy';
 
 /**
  * Rent-roll validation - focused on unit count accuracy
@@ -13,21 +13,25 @@ export function detectDuplicates(units: GenericRentRollUnit[]): ValidationIssue[
   const issues: ValidationIssue[] = [];
   const seen = new Map<string, number[]>();
 
+  // Key on building + unit: multi-building documents legitimately repeat unit
+  // numbers across buildings ("1A" in both 122 and 124).
   units.forEach((unit, index) => {
-    const normalized = unit.unitNumber.trim().toUpperCase();
+    const normalized = `${(unit.building ?? '').trim().toUpperCase()}|${unit.unitNumber.trim().toUpperCase()}`;
     if (!seen.has(normalized)) {
       seen.set(normalized, []);
     }
     seen.get(normalized)!.push(index);
   });
 
-  for (const [unitNumber, indices] of seen) {
+  for (const [, indices] of seen) {
     if (indices.length > 1) {
+      const unit = units[indices[0]];
+      const label = unit.building ? `${unit.building} ${unit.unitNumber}` : unit.unitNumber;
       issues.push({
         type: 'duplicate',
         severity: 'critical',
-        message: `Unit "${unitNumber}" appears ${indices.length} times (rows: ${indices.map(i => i + 1).join(', ')})`,
-        unitNumbers: [unitNumber],
+        message: `Unit "${label}" appears ${indices.length} times (rows: ${indices.map(i => i + 1).join(', ')})`,
+        unitNumbers: [unit.unitNumber],
         details: { indices },
       });
     }
@@ -108,9 +112,10 @@ export function detectGaps(units: GenericRentRollUnit[]): ValidationIssue[] {
  * Check for count mismatch between stated and extracted counts
  */
 export function checkCountMismatch(
-  extractedCount: number,
+  units: GenericRentRollUnit[],
   statedCount: number | null
 ): ValidationIssue | null {
+  const extractedCount = units.length;
   if (statedCount === null) {
     return {
       type: 'count_mismatch',
@@ -120,7 +125,7 @@ export function checkCountMismatch(
     };
   }
 
-  if (extractedCount !== statedCount) {
+  if (!reconcileUnitCount(statedCount, units).ok) {
     const diff = extractedCount - statedCount;
     const direction = diff > 0 ? 'more' : 'fewer';
     return {
@@ -358,7 +363,7 @@ export function validateExtraction(
   issues.push(...checkMissingUnitNumbers(units));
   issues.push(...detectDuplicates(units));
 
-  const countIssue = checkCountMismatch(units.length, statedCount);
+  const countIssue = checkCountMismatch(units, statedCount);
   if (countIssue) {
     issues.push(countIssue);
   }

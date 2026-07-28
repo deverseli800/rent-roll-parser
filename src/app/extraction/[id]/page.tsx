@@ -1295,6 +1295,7 @@ export default function ExtractionPage() {
     // Prepare data for Excel export
     const exportData = units.map(unit => ({
       'Unit #': unit.unitNumber,
+      'Building': unit.building || '',
       'Status': unit.status,
       'Type': unit.unitType || '',
       'Sqft': unit.unitSqft || '',
@@ -1337,7 +1338,7 @@ export default function ExtractionPage() {
 
   // Detect which optional columns have data
   const columnsWithData = useMemo(() => {
-    const optionalFields = ['unitType', 'unitSqft', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
+    const optionalFields = ['building', 'unitType', 'unitSqft', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
     const hasData: Record<string, boolean> = {};
 
     for (const field of optionalFields) {
@@ -1542,6 +1543,12 @@ export default function ExtractionPage() {
         width: 100,
         editable: true,
         pinned: 'left',
+      },
+      {
+        field: 'building',
+        headerName: 'Building',
+        width: 160,
+        editable: true,
       },
       {
         field: 'status',
