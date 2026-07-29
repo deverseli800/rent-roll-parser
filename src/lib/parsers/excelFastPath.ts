@@ -334,6 +334,15 @@ export function applyStructure(
   if (!ref) return null;
   const range = XLSX.utils.decode_range(ref);
   const maxCol = Math.min(range.e.c, 80);
+  // sheetToGrid renders the grid from the sheet's first populated column, so the
+  // mapper's column indices are grid-relative while cellValue() addresses
+  // absolute sheet columns. On a sheet whose used range starts past column A
+  // (leading blank spacer columns are common in report exports) every lookup
+  // would land originCol columns to the left and read blanks — the walk yields
+  // zero units and the sheet falls back to the AI ladder. Rows need no such
+  // shift: the grid labels them absolutely ("R<n>").
+  const originCol = range.s.c;
+  const toSheetCol = (i: number | null): number | null => (i === null ? null : i + originCol);
   const skip = s.skipPatterns.map(p => p.toLowerCase()).filter(Boolean);
   const stops = s.stopMarkers.map(p => p.toLowerCase()).filter(Boolean);
   const rentCodes = new Set((s.block?.rentChargeCodes ?? []).map(c => c.toLowerCase().trim()));
@@ -342,17 +351,21 @@ export function applyStructure(
   const concessionCodes = new Set((s.block?.concessionChargeCodes ?? []).map(c => c.toLowerCase().trim()));
 
   const units: ExtractedUnit[] = [];
-  const cols = s.columns;
+  const cols: typeof s.columns = { ...s.columns };
+  for (const key of Object.keys(cols) as (keyof typeof cols)[]) cols[key] = toSheetCol(cols[key]);
+  const chargeDescCol = toSheetCol(s.block?.chargeDescCol ?? null);
+  const chargeAmtCol = toSheetCol(s.block?.chargeAmtCol ?? null);
 
   // Columns to capture verbatim into sourceColumns: the mapper's extraColumns,
   // minus any index already mapped to a first-class field (guard against the
   // mapper double-listing a mapped column).
   const usedIdx = new Set<number>();
   for (const v of Object.values(cols)) if (v !== null) usedIdx.add(v);
-  if (s.block) { for (const v of [s.block.chargeDescCol, s.block.chargeAmtCol]) if (v !== null) usedIdx.add(v); }
-  const extraCols = (s.extraColumns ?? []).filter(
-    ec => ec && typeof ec.index === 'number' && ec.index >= 0 && !usedIdx.has(ec.index) && ec.header,
-  );
+  for (const v of [chargeDescCol, chargeAmtCol]) if (v !== null) usedIdx.add(v);
+  const extraCols = (s.extraColumns ?? [])
+    .filter(ec => ec && typeof ec.index === 'number' && ec.index >= 0 && ec.header)
+    .map(ec => ({ ...ec, index: ec.index + originCol }))
+    .filter(ec => !usedIdx.has(ec.index));
 
   const isUnitRow = (r: number): string | null => {
     const unitVal = readString(cellValue(sheet, r, cols.unitNumber!));
@@ -412,8 +425,8 @@ export function applyStructure(
           const t = rowText(sheet, cr, Math.min(maxCol, 12));
           if (matchesAny(t, stops)) break;
         }
-        const desc = readString(cellValue(sheet, cr, s.block!.chargeDescCol!));
-        const amt = readNumber(cellValue(sheet, cr, s.block!.chargeAmtCol!));
+        const desc = readString(cellValue(sheet, cr, chargeDescCol!));
+        const amt = readNumber(cellValue(sheet, cr, chargeAmtCol!));
         if (!desc || amt === null) continue;
         const code = desc.toLowerCase().trim();
         if (rentCodes.has(code)) { sums.rent += amt; saw.rent = true; }
