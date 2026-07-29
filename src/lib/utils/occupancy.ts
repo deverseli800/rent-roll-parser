@@ -77,7 +77,7 @@ export interface OccupiedReconciliation {
   physical: number;
   /** model + down + applicant — units a document may or may not call occupied */
   slack: number;
-  /** |stated − physical| */
+  /** |stated − whichever accepted reading is closest| (see reconcileOccupiedCount) */
   diff: number;
   /** Human-readable reconciliation, e.g. "210 occupied + 17 notice = 227; stated 228 is within the 2 model/down/applicant units" */
   explanation: string;
@@ -85,8 +85,10 @@ export interface OccupiedReconciliation {
 
 /**
  * Reconcile a document's stated occupied count against extracted status
- * counts. Passes when the difference is fully explained by ambiguous
- * non-revenue units (with a floor of 1 for snapshot/rounding noise).
+ * counts. Accepts either occupancy convention — occupied+notice, or occupied
+ * alone with notice counted separately — and passes when the closer reading's
+ * difference is fully explained by ambiguous non-revenue units (with a floor
+ * of 1 for snapshot/rounding noise).
  */
 export function reconcileOccupiedCount(
   stated: number,
@@ -94,22 +96,38 @@ export function reconcileOccupiedCount(
 ): OccupiedReconciliation {
   const physical = physicallyOccupiedCount(counts);
   const slack = counts.model + counts.down + counts.applicant;
-  const diff = Math.abs(stated - physical);
+  // Documents disagree on whether on-notice units count as occupied. A
+  // "Totals" line usually folds them in; an occupancy-status breakdown lists
+  // "Occupied" strictly and gives On-Notice its own row. One document often
+  // prints BOTH (e.g. a RealPage detail export stating 384 on the totals row
+  // and 361 occupied + 19 + 4 on-notice in the summary block), so which figure
+  // gets read back is arbitrary. Accept whichever reading the stated number
+  // matches rather than assuming occupied+notice.
+  const strictOnly = counts.notice > 0 ? counts.occupied : null;
+  const diff = Math.min(
+    Math.abs(stated - physical),
+    strictOnly === null ? Infinity : Math.abs(stated - strictOnly)
+  );
   const ok = diff <= Math.max(1, slack);
+  const viaStrict = strictOnly !== null && Math.abs(stated - strictOnly) < Math.abs(stated - physical);
 
   const parts = [`${counts.occupied} occupied`];
   if (counts.notice > 0) parts.push(`${counts.notice} notice`);
   const breakdown = `${parts.join(' + ')} = ${physical}`;
 
   let explanation: string;
-  if (diff === 0) {
+  if (diff === 0 && viaStrict) {
+    explanation = `${counts.occupied} occupied, matches stated ${stated}; the ${counts.notice} notice unit${counts.notice === 1 ? ' is' : 's are'} counted separately by this document`;
+  } else if (diff === 0) {
     explanation = `${breakdown}, matches stated ${stated}`;
   } else if (ok) {
     explanation = slack > 0
       ? `${breakdown}; stated ${stated} is within the ${slack} model/down/applicant unit${slack === 1 ? '' : 's'} the document may count as occupied`
       : `${breakdown}; stated ${stated} differs by ${diff} (within snapshot tolerance)`;
   } else {
-    explanation = `${breakdown} vs stated ${stated} (diff ${diff}, exceeds the ${slack} ambiguous model/down/applicant units)`;
+    explanation = strictOnly === null
+      ? `${breakdown} vs stated ${stated} (diff ${diff}, exceeds the ${slack} ambiguous model/down/applicant units)`
+      : `neither ${strictOnly} occupied nor ${physical} occupied+notice matches stated ${stated} (closest diff ${diff}, exceeds the ${slack} ambiguous model/down/applicant units)`;
   }
 
   return { ok, physical, slack, diff, explanation };
