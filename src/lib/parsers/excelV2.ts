@@ -264,11 +264,11 @@ async function extractSheet(
     kind: 'info',
     message: `Analyzing the structure of sheet "${info.name}" (${info.rows} rows) for a deterministic fast-path read`,
   });
-  const { result: fast, reason: fastReason } = await tryFastPath(info.sheet, sampleGrid(info.text), usages, external);
+  const { result: fast, reason: fastReason, basis: fastBasis } = await tryFastPath(info.sheet, sampleGrid(info.text), usages, external);
   if (fast) {
     report?.('extracting', `sheet "${info.name}" — fast path`, {
       kind: 'fastpath',
-      message: `Fast path succeeded on "${info.name}" — ${fast.units.length} units read deterministically and verified against stated totals (no AI extraction needed)`,
+      message: `Fast path succeeded on "${info.name}" — ${fast.units.length} units read deterministically and proven against ${fastBasis ?? 'the document\'s stated totals'} (no AI extraction needed)`,
     });
     return { result: fast, usage: usages, path: 'fast' };
   }

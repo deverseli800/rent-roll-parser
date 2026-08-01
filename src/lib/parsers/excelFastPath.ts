@@ -66,6 +66,11 @@ interface SheetStructure {
   extraColumns: { header: string; index: number }[];
 }
 
+// How far past a unit's anchor row the walk will look for that unit's scalar
+// attributes in a block layout. Charge blocks in these exports run a handful of
+// rows; the cap keeps a runaway scan from reaching a later section of the sheet.
+const SCALAR_SCAN_LIMIT = 20;
+
 const numOrNull = { type: ['number', 'null'] } as const;
 // Column indices use -1 as "absent" instead of null: the structured-outputs
 // compiler limits schemas to 16 union-typed parameters.
@@ -396,10 +401,44 @@ export function applyStructure(
     const unitNumber = isUnitRow(r);
     if (!unitNumber) continue;
 
-    const rawStatus = cols.status !== null ? readString(cellValue(sheet, r, cols.status)) : null;
-    let tenantName = cols.tenantName !== null ? readString(cellValue(sheet, r, cols.tenantName)) : null;
+    // Block layout: a unit's scalar attributes (market rent, sqft, dates, type)
+    // do not always sit on the row carrying the unit id. A block whose first
+    // charge line is e.g. `storage` puts the `rent` line — and the market rent
+    // beside it — on the row below. Rent already walks the whole block by charge
+    // code; scalars read the anchor row only, so they came back null and the
+    // market-rent total silently under-summed by that unit.
+    //
+    // So scan the block's CONTIGUOUS rows and take the first value present,
+    // anchor row first. Bounded by the next unit row, a stop marker, the first
+    // fully blank row (blocks are blank-separated in these exports) and a hard
+    // row cap — otherwise a distant footer total could be attributed to the
+    // last unit in the sheet.
+    let scalarEnd = r;
+    if (s.layout === 'block') {
+      for (let cr = r + 1; cr <= Math.min(range.e.r, r + SCALAR_SCAN_LIMIT); cr++) {
+        if (isUnitRow(cr)) break;
+        const t = rowText(sheet, cr, Math.min(maxCol, 12));
+        if (!t || matchesAny(t, stops)) break;
+        scalarEnd = cr;
+      }
+    }
+    /** First row in this unit's block carrying a value in `col` (anchor row wins). */
+    const scalarRow = (col: number | null): number => {
+      if (col === null || scalarEnd === r) return r;
+      // Never scan the charge columns or the unit-id column: that would pull the
+      // NEXT charge line's description/amount into a scalar field.
+      if (col === chargeDescCol || col === chargeAmtCol || col === cols.unitNumber) return r;
+      for (let cr = r; cr <= scalarEnd; cr++) {
+        const v = cellValue(sheet, cr, col);
+        if (v !== undefined && v !== null && String(v).trim() !== '') return cr;
+      }
+      return r;
+    };
+
+    const rawStatus = cols.status !== null ? readString(cellValue(sheet, scalarRow(cols.status), cols.status)) : null;
+    let tenantName = cols.tenantName !== null ? readString(cellValue(sheet, scalarRow(cols.tenantName), cols.tenantName)) : null;
     if (cols.tenantName2 !== null) {
-      const second = readString(cellValue(sheet, r, cols.tenantName2));
+      const second = readString(cellValue(sheet, scalarRow(cols.tenantName2), cols.tenantName2));
       if (second) tenantName = tenantName ? `${tenantName} ${second}` : second;
     }
 
@@ -454,10 +493,10 @@ export function applyStructure(
       else status = tenant ? 'occupied' : 'vacant';
     }
 
-    const unitType = cols.unitType !== null ? readString(cellValue(sheet, r, cols.unitType)) : null;
+    const unitType = cols.unitType !== null ? readString(cellValue(sheet, scalarRow(cols.unitType), cols.unitType)) : null;
     const { category, includeInUnitCount } = classifyCategory(unitNumber, unitType);
     const sourceColumns = extraCols
-      .map(ec => ({ header: ec.header, value: readString(cellValue(sheet, r, ec.index)) }))
+      .map(ec => ({ header: ec.header, value: readString(cellValue(sheet, scalarRow(ec.index), ec.index)) }))
       .filter((x): x is { header: string; value: string } => x.value !== null);
 
     units.push({
@@ -467,18 +506,18 @@ export function applyStructure(
       includeInUnitCount,
       sourceColumns,
       monthlyRent,
-      marketRent: cols.marketRent !== null ? readNumber(cellValue(sheet, r, cols.marketRent)) : null,
+      marketRent: cols.marketRent !== null ? readNumber(cellValue(sheet, scalarRow(cols.marketRent), cols.marketRent)) : null,
       subsidyRent,
       employeeDiscount,
       concession,
       tenantName: tenant,
-      unitSqft: cols.unitSqft !== null ? readNumber(cellValue(sheet, r, cols.unitSqft)) : null,
+      unitSqft: cols.unitSqft !== null ? readNumber(cellValue(sheet, scalarRow(cols.unitSqft), cols.unitSqft)) : null,
       unitType,
       leaseStatus: rawStatus,
-      moveInDate: cols.moveInDate !== null ? readDate(cellValue(sheet, r, cols.moveInDate)) : null,
-      moveOutDate: cols.moveOutDate !== null ? readDate(cellValue(sheet, r, cols.moveOutDate)) : null,
-      leaseStartDate: cols.leaseStartDate !== null ? readDateAt(sheet, r, cols.leaseStartDate, cols.leaseStartDate === cols.leaseEndDate ? 'start' : null) : null,
-      leaseEndDate: cols.leaseEndDate !== null ? readDateAt(sheet, r, cols.leaseEndDate, cols.leaseStartDate === cols.leaseEndDate ? 'end' : null) : null,
+      moveInDate: cols.moveInDate !== null ? readDate(cellValue(sheet, scalarRow(cols.moveInDate), cols.moveInDate)) : null,
+      moveOutDate: cols.moveOutDate !== null ? readDate(cellValue(sheet, scalarRow(cols.moveOutDate), cols.moveOutDate)) : null,
+      leaseStartDate: cols.leaseStartDate !== null ? readDateAt(sheet, scalarRow(cols.leaseStartDate), cols.leaseStartDate, cols.leaseStartDate === cols.leaseEndDate ? 'start' : null) : null,
+      leaseEndDate: cols.leaseEndDate !== null ? readDateAt(sheet, scalarRow(cols.leaseEndDate), cols.leaseEndDate, cols.leaseStartDate === cols.leaseEndDate ? 'end' : null) : null,
     });
   }
 
@@ -548,12 +587,78 @@ function coverageIssue(result: ExtractionResult, sampleText: string): string | n
   return null;
 }
 
+/**
+ * What the fast path is allowed to accept as PROOF that the walk read every unit.
+ *
+ * A stated unit count is the cleanest anchor, but plenty of real exports never
+ * print one (Yardi "Rent Roll with Lease Charges" states only money totals). A
+ * stated MARKET-rent total can be just as strong, and specifically covers the
+ * hole a rent total cannot: vacant units carry a market rent even at $0 actual
+ * rent, so a dropped vacant moves the market sum.
+ *
+ * To be proof rather than a coincidence, the market anchor must satisfy all of:
+ *   - every unit carries a market rent (fill = 100%) — otherwise a missing unit
+ *     could contribute nothing to the sum and hide,
+ *   - the walked sum matches the stated total within a HAIRLINE tolerance
+ *     (max($1, 0.02%)) — these columns are additive and should agree exactly;
+ *     the 0.5% band used for ordinary verification is ~2 units of slack on a
+ *     $1M roll,
+ *   - the smallest unit market rent EXCEEDS that tolerance, which is what makes
+ *     the match dispositive: no single unit can be missing without breaking it.
+ * Plus a second stated money total must exist (a lone anchor is one mapper
+ * mistake away from self-agreement).
+ *
+ * The rent total deliberately does NOT get the hairline treatment: a stated
+ * "rent" total is often a total-CHARGES figure (misc income, storage, SCRIE/DRIE
+ * credits) that legitimately differs from the base-rent sum, which is why
+ * verifyAgainstStated tolerates 0.5% there. It corroborates; it never proves.
+ */
+function provenComplete(r: ExtractionResult): { ok: boolean; basis: string; detail: string } {
+  if (r.statedTotalUnits !== null) {
+    return { ok: true, basis: `the stated unit count (${r.statedTotalUnits})`, detail: '' };
+  }
+
+  const statedMarket = r.statedSummary?.totalMarketRent ?? null;
+  const statedRent = r.statedSummary?.totalMonthlyRent ?? null;
+  const parts: string[] = [];
+  if (statedMarket === null || statedMarket <= 0) {
+    parts.push('no stated market-rent total');
+  } else {
+    const withMarket = r.units.filter(u => u.marketRent !== null && u.marketRent !== undefined);
+    const sum = withMarket.reduce((s, u) => s + (u.marketRent ?? 0), 0);
+    const tol = Math.max(1, statedMarket * 0.0002);
+    const min = withMarket.reduce((m, u) => Math.min(m, u.marketRent ?? 0), Infinity);
+    if (withMarket.length < r.units.length) {
+      parts.push(
+        `${r.units.length - withMarket.length} of ${r.units.length} units have no market rent, so the market total cannot prove none are missing`
+      );
+    } else if (Math.abs(sum - statedMarket) > tol) {
+      parts.push(
+        `stated market rent ${statedMarket.toFixed(2)} vs walked ${sum.toFixed(2)} (off ${Math.abs(sum - statedMarket).toFixed(2)}, tolerance ${tol.toFixed(2)})`
+      );
+    } else if (!(min > tol)) {
+      parts.push(
+        `the market total reconciles but the smallest unit market rent (${min.toFixed(2)}) is within tolerance, so a missing unit could hide inside it`
+      );
+    } else if (statedRent === null || statedRent <= 0) {
+      parts.push('the market total reconciles exactly but it is the only stated money total — no second anchor to corroborate it');
+    } else {
+      return {
+        ok: true,
+        basis: `the stated market-rent total (${statedMarket.toFixed(2)} = walked ${sum.toFixed(2)}, every unit priced, smallest ${min.toFixed(2)} > ${tol.toFixed(2)} tolerance), corroborated by the stated rent total`,
+        detail: '',
+      };
+    }
+  }
+  return { ok: false, basis: '', detail: parts.join('; ') };
+}
+
 export async function tryFastPath(
   sheet: XLSX.WorkSheet,
   sampleText: string,
   usages: AIUsage[],
   external?: PreviewData | null
-): Promise<{ result: ExtractionResult | null; reason?: string }> {
+): Promise<{ result: ExtractionResult | null; reason?: string; basis?: string }> {
   try {
     let reason = '';
     const inventory = columnValueInventory(sheet);
@@ -577,20 +682,24 @@ export async function tryFastPath(
         // the detail sheet — harvested anchors let the fast path prove itself.
         if (external) applyExternalStated(result, external);
         const verification = verifyAgainstStated(result);
-        // The fast path must PROVE itself against stated anchors. A rent total
-        // alone cannot catch a dropped null-rent unit (e.g. a vacant retail
-        // row), so specifically require a stated unit COUNT.
-        if (verification.ok && result.statedTotalUnits !== null) {
+        // The fast path must PROVE itself against the document's own stated
+        // anchors — a stated unit count, or a market-rent total strong enough to
+        // stand in for one (see provenComplete).
+        const proof = provenComplete(result);
+        if (verification.ok && proof.ok) {
           const gap = coverageIssue(result, sampleText);
-          if (!gap) return { result };
+          if (!gap) return { result, basis: proof.basis };
           reason = gap; // feeds the retry hint — a remapped attempt may fix it
           anchored = true;
           continue;
         }
-        anchored = anchored || result.statedTotalUnits !== null;
-        reason = result.statedTotalUnits === null
-          ? 'the document states no unit count to prove the deterministic read against'
-          : (verification.issues[0] ?? 'verification failed');
+        // A remap is worth trying whenever the document offers an anchor at all.
+        anchored = anchored
+          || result.statedTotalUnits !== null
+          || (result.statedSummary?.totalMarketRent ?? null) !== null;
+        reason = !verification.ok
+          ? (verification.issues[0] ?? 'verification failed')
+          : `no stated unit count, and the stated totals do not prove the read: ${proof.detail}`;
       }
       if (!sawWalk) reason = 'layout unsupported by the deterministic walker';
 
