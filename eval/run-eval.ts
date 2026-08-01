@@ -82,7 +82,13 @@ async function main() {
   const concIdx = args.indexOf('--concurrency');
   const concurrency = concIdx !== -1 ? parseInt(args[concIdx + 1], 10) : 4;
   const setIdx = args.indexOf('--set');
-  let prefixes = args.filter((a, i) => !a.startsWith('--') && i !== concIdx + 1 && i !== setIdx + 1);
+  // Skip the value slot only for flags that are actually present: with the flag
+  // absent, indexOf returns -1 and `i !== idx + 1` would drop args[0] — silently
+  // ignoring the first corpus id in `run-eval.ts 02 07 11`.
+  const flagValueSlots = new Set<number>();
+  if (concIdx !== -1) flagValueSlots.add(concIdx + 1);
+  if (setIdx !== -1) flagValueSlots.add(setIdx + 1);
+  let prefixes = args.filter((a, i) => !a.startsWith('--') && !flagValueSlots.has(i));
   if (setIdx !== -1) {
     const sets = JSON.parse(fs.readFileSync(path.join(__dirname, 'eval-sets.json'), 'utf-8'));
     const set = sets[args[setIdx + 1]];

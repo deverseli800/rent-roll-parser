@@ -13,7 +13,11 @@ dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
 import { parseRentRoll } from '../src/lib/parsers';
 
 const CORPUS_DIR = path.join(__dirname, 'corpus');
-const RUN_DIR = path.join(__dirname, 'runs', 'latest');
+// EVAL_RUN_DIR keeps a fresh parse from clobbering a baseline in runs/latest
+// (same override run-eval.ts honors).
+const RUN_DIR = process.env.EVAL_RUN_DIR
+  ? path.resolve(process.env.EVAL_RUN_DIR)
+  : path.join(__dirname, 'runs', 'latest');
 
 async function main() {
   const args = process.argv.slice(2);
