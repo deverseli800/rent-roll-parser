@@ -1338,7 +1338,7 @@ export default function ExtractionPage() {
 
   // Detect which optional columns have data
   const columnsWithData = useMemo(() => {
-    const optionalFields = ['building', 'unitType', 'unitSqft', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
+    const optionalFields = ['building', 'unitType', 'unitSqft', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'totalCharges', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
     const hasData: Record<string, boolean> = {};
 
     for (const field of optionalFields) {
@@ -1646,6 +1646,19 @@ export default function ExtractionPage() {
         type: 'numericColumn',
         valueFormatter: currencyFormatter,
         valueParser: currencyParser,
+      },
+      {
+        // Sum of the unit's itemized charge lines (rent + fees + credits) for
+        // charge-block documents; hover shows the line items. Derived, not
+        // editable — edit the source charges via re-extraction.
+        field: 'totalCharges',
+        headerName: 'Total Charges',
+        width: 130,
+        editable: false,
+        type: 'numericColumn',
+        valueFormatter: currencyFormatter,
+        tooltipValueGetter: (params) =>
+          params.data?.charges?.map((c) => `${c.code}: ${c.amount}`).join('  ·  '),
       },
       {
         field: 'tenantName',

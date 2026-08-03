@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
 import { extractStructured, MaxTokensError, MODELS, modelLabel, type AIUsage } from './aiClient';
+import { createCharge } from '../utils/chargeNormalization';
 import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileUnitCount } from '../utils/occupancy';
 
 /**
@@ -57,7 +58,7 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
         // category/includeInUnitCount/sourceColumns are REQUIRED (non-null /
         // array) on purpose: they cost the grammar no extra union-typed params
         // (see the union-budget note above), whereas nullable/optional would.
-        required: ['unitNumber', 'building', 'status', 'category', 'includeInUnitCount', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'sourceColumns'],
+        required: ['unitNumber', 'building', 'status', 'category', 'includeInUnitCount', 'monthlyRent', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'tenantName', 'sourceColumns', 'charges'],
         properties: {
           unitNumber: { type: 'string' },
           building: {
@@ -103,6 +104,19 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
               },
             },
           },
+          charges: {
+            type: 'array',
+            description: 'For itemized charge-block documents only: EVERY charge line of this unit\'s block, verbatim (rent lines, fees, negative credits), excluding the "Charge Total"/"Total" line. [] when the document has no itemized charge rows.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['code', 'amount'],
+              properties: {
+                code: { type: 'string' },
+                amount: { type: 'number' },
+              },
+            },
+          },
         },
       },
     },
@@ -116,6 +130,14 @@ export interface ExtractedUnit {
   category: 'residential' | 'commercial' | 'non_unit_income';
   includeInUnitCount: boolean;
   sourceColumns: { header: string; value: string }[];
+  // Every itemized charge line of the unit's block, verbatim (rent lines, fees,
+  // credits; never the Charge Total line). Categorization happens downstream in
+  // toGenericRentRollUnits. Absent for documents without itemized charges.
+  charges?: { code: string; amount: number }[];
+  // Fast-path internal: the block's printed "Charge Total" amount, used to
+  // verify the charge lines were captured completely. Never serialized —
+  // toGenericRentRollUnits does not copy it.
+  blockChargeTotal?: number | null;
   monthlyRent: number | null;
   marketRent?: number | null;
   subsidyRent?: number | null;
@@ -199,6 +221,7 @@ FIELD RULES:
 - concession: a recurring monthly concession/credit shown for the unit (charge codes like "CONC",
   "Concession", "Rent Credit"). Keep the sign as displayed (usually negative). Do NOT subtract
   concessions from monthlyRent — report them separately. null when none.
+- charges: for documents that list ITEMIZED CHARGE ROWS per unit (charge-code blocks like "Rent 1,196.00" / "Trash Removal 10.00" / "Pet Rent 35.00"), report EVERY charge line of the unit's block as { "code": <charge code/description verbatim as printed>, "amount": <number, sign as displayed> } — the rent lines themselves, every fee line (trash/pet/parking/storage/amenity), and negative credit/concession lines, but NEVER the "Charge Total"/"Total" line. This preserves the unit's full income picture; it does NOT change the field rules above (monthlyRent stays the rent-only figure, concession/employeeDiscount stay separately reported). [] for documents without itemized charge rows — column-based fees belong in sourceColumns, not here.
 - building: when the document covers MORE THAN ONE building/property, the building this unit belongs to, exactly as its section is labeled (e.g. "124 Main Street"). null for single-property documents.
 - tenantName: as displayed ("Last, First" stays "Last, First"). Placeholder text like "VACANT" -> null.
 - unitType: copy the EXACT text shown (e.g. "4/1" stays "4/1" — do NOT expand to "4BR/1BA"; "2/1.00" stays "2/1.00"). If the document has ANY unit type / floorplan / bedrooms-baths / use-type column, ALWAYS populate unitType from it for every unit (commercial use codes like "CM" or "Store" count). null only when no such column exists.
@@ -258,9 +281,19 @@ function cleanPlaceholder(value: string | null | undefined): string | null {
   return s;
 }
 
+// Total-line guard for charges: a model (or a mapper sweep) may emit the block's
+// "Total"/"Charge Total:" line as a charge despite instructions; counting it
+// would double the unit's charges. Matches "Total", "Charge Total:",
+// "Resident Total:" — not multi-word section totals or ordinary charge codes.
+export const CHARGE_TOTAL_LINE = /^([a-z]+\s+)?total:?$/i;
+
 /** Convert an ExtractionResult's units to GenericRentRollUnit[] */
 export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: number): GenericRentRollUnit[] {
-  return units.map((u, i) => ({
+  return units.map((u, i) => {
+    const charges = (u.charges ?? [])
+      .filter(c => c && typeof c.amount === 'number' && c.code && !CHARGE_TOTAL_LINE.test(c.code.trim()))
+      .map(c => createCharge(c.code.trim(), c.amount));
+    return {
     unitNumber: String(u.unitNumber).trim(),
     building: cleanPlaceholder(u.building),
     status: normalizeStatus(u.status),
@@ -281,8 +314,15 @@ export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: numb
     leaseEndDate: u.leaseEndDate ?? null,
     sourceRow: i + 1,
     ...(u.sourceColumns && u.sourceColumns.length ? { sourceColumns: u.sourceColumns } : {}),
+    ...(charges.length
+      ? {
+          charges,
+          totalCharges: Math.round(charges.reduce((a, c) => a + c.amount, 0) * 100) / 100,
+        }
+      : {}),
     ...(sourcePage !== undefined ? { sourcePage } : {}),
-  }));
+    };
+  });
 }
 
 /**
@@ -602,12 +642,13 @@ export type ProgressReporter = (
 ) => void;
 
 // A document's units no longer fit in one 128K-token response once it has
-// roughly this many units (~500 output tokens each incl. adaptive thinking).
+// roughly this many units (~500 output tokens each incl. adaptive thinking;
+// itemized charge blocks add ~100-150 more per unit for the charges array).
 // Chunk target leaves ample headroom per call.
-const TARGET_UNITS_PER_CHUNK = 150;
+const TARGET_UNITS_PER_CHUNK = 110;
 // Above this many stated units a single call is a mathematical certainty to
 // truncate — skip the wasted attempt and go straight to chunked mode.
-const PROACTIVE_CHUNK_UNITS = 400;
+const PROACTIVE_CHUNK_UNITS = 300;
 const MIN_CHUNK_ITEMS = 4;
 
 export interface ChunkingOptions {

@@ -15,7 +15,7 @@ One JSON file per corpus file: `eval/groundtruth/<corpus-id>.json`.
   // Fields the DOCUMENT actually provides per unit. Only these get graded.
   // Allowed: status, monthlyRent, tenantName, unitSqft, unitType,
   //          leaseStartDate, leaseEndDate, moveInDate, moveOutDate,
-  //          category, regulation
+  //          category, regulation, charges
   "documentFields": ["status", "monthlyRent", "tenantName", "leaseEndDate"],
   "statedUnitCount": 16,          // total units stated IN the document, or null
   "statedTotalMonthlyRent": 41000.5, // stated total rent IN the document, or null
@@ -39,7 +39,7 @@ One JSON file per corpus file: `eval/groundtruth/<corpus-id>.json`.
                                     // 'non_unit_income' (parking/antenna/laundry/
                                     // storage/signage). Graded only when
                                     // 'category' is in documentFields.
-      "regulation": "RS"            // OPTIONAL: the rent-regulation / lease-type
+      "regulation": "RS",           // OPTIONAL: the rent-regulation / lease-type
                                     // value printed for this unit, VERBATIM
                                     // ("RS", "FM", "Decontrolled", "MRKT", ...).
                                     // Graded (when 'regulation' is in
@@ -48,6 +48,20 @@ One JSON file per corpus file: `eval/groundtruth/<corpus-id>.json`.
                                     // passthrough — the engine is NOT expected to
                                     // interpret it. null when the document shows
                                     // no regulation value for the unit.
+      "charges": [                  // OPTIONAL: for charge-block documents, the
+        { "code": "rent", "amount": 9995 },     // itemized charge lines printed for
+        { "code": "storage", "amount": 200 }    // this unit, VERBATIM (code as
+      ]                             // printed, amount with sign as displayed),
+                                    // EXCLUDING the "Charge Total" line. Graded
+                                    // (when 'charges' is in documentFields) as
+                                    // CAPTURE: every listed line must appear in
+                                    // the extracted unit's charges with matching
+                                    // code and amount (to the cent); extra
+                                    // extracted lines are NOT penalized, so a GT
+                                    // may list only the lines that matter (e.g.
+                                    // just the non-rent ones). null when the
+                                    // document prints no itemized charges for
+                                    // this unit.
     }
   ],
   "verification": {
@@ -105,6 +119,12 @@ Per file:
     `sourceColumns` (normalized equality/containment). Tests CAPTURE of the
     regulation/lease-type column, not interpretation. A null GT value is trivially
     correct (nothing to capture).
+  - charges: passes when every GT charge line has a matching line in the
+    extracted unit's `charges` — normalized code equality/containment plus
+    amount to the cent, multiset semantics (duplicate lines need duplicate
+    captures). Extra extracted lines are not penalized. A null/empty GT list is
+    trivially correct. Tests CAPTURE of the itemized charge block, one cell per
+    unit.
 - File accuracy = correct cells / total cells.
 - **Overall accuracy = macro average of file accuracies** (target >= 95%).
   Micro (cell-weighted) also reported.
