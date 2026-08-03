@@ -22,6 +22,14 @@ export interface GroundTruthUnit {
   // the parser captured it in the unit's sourceColumns passthrough — the engine
   // is not expected to interpret it. null when the document has no such value.
   regulation?: string | null;
+  // The itemized charge lines printed for this unit in charge-block documents,
+  // VERBATIM: code as printed, amount as displayed (sign included), excluding
+  // the "Charge Total" line. Graded as CAPTURE (like regulation): every listed
+  // line must appear in the extracted unit's charges with a matching code and
+  // amount; extra extracted lines are not penalized (a ground truth may list
+  // only the lines that matter). null/absent when the document prints no
+  // itemized charges for this unit.
+  charges?: { code: string; amount: number }[] | null;
 }
 
 export interface GroundTruth {
@@ -202,6 +210,35 @@ function regulationCaptured(expected: string | null | undefined, sourceColumns?:
   });
 }
 
+const normCode = (s: string) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+/**
+ * True if every expected charge line was captured in the extracted unit's
+ * charges: matching code (normalized equality or containment) and amount
+ * (to the cent, with a hair of tolerance for float noise). Multiset semantics —
+ * two identical expected lines need two captured lines. Extra captured lines
+ * are not penalized (capture, not enumeration, is the contract; a ground truth
+ * may list only the lines that matter). A null/empty expected list is trivially
+ * satisfied.
+ */
+function chargesCaptured(
+  expected: { code: string; amount: number }[] | null | undefined,
+  actual: { code: string; amount: number }[] | undefined
+): boolean {
+  if (!expected || expected.length === 0) return true;
+  const pool = (actual ?? []).map(c => ({ code: normCode(c.code), amount: c.amount, used: false }));
+  for (const want of expected) {
+    const w = normCode(want.code);
+    const hit = pool.find(p =>
+      !p.used &&
+      Math.abs(p.amount - want.amount) <= 0.02 &&
+      (p.code === w || (w.length >= 3 && (p.code.includes(w) || w.includes(p.code))))
+    );
+    if (!hit) return false;
+    hit.used = true;
+  }
+  return true;
+}
+
 /**
  * Align extracted units to ground truth units by normalized unit number.
  * Handles multi-property files where one side may carry a building prefix:
@@ -255,7 +292,7 @@ function alignUnits(gtUnits: GroundTruthUnit[], extracted: GenericRentRollUnit[]
 const FIELD_ORDER = [
   'status', 'monthlyRent', 'tenantName', 'unitSqft', 'unitType',
   'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate',
-  'category', 'regulation',
+  'category', 'regulation', 'charges',
 ] as const;
 
 export function scoreFile(gt: GroundTruth, extracted: GenericRentRollUnit[]): FileScore {
@@ -336,6 +373,10 @@ export function scoreFile(gt: GroundTruth, extracted: GenericRentRollUnit[]): Fi
         case 'regulation':
           ok = regulationCaptured(g.regulation, e.sourceColumns);
           actual = e.sourceColumns ?? null;
+          break;
+        case 'charges':
+          ok = chargesCaptured(g.charges, e.charges);
+          actual = e.charges ?? null;
           break;
       }
       fieldBreakdown[f].total++;

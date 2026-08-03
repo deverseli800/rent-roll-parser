@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { extractStructured, MODELS, type AIUsage } from './aiClient';
 import {
   applyExternalStated,
+  CHARGE_TOTAL_LINE,
   normalizeStatus,
   verifyAgainstStated,
   type ExtractionResult,
@@ -446,6 +447,11 @@ export function applyStructure(
     let subsidyRent: number | null = null;
     let employeeDiscount: number | null = null;
     let concession: number | null = null;
+    // Block layouts: every charge line captured verbatim (the unit's full
+    // income picture), plus the block's printed "Charge Total" as a
+    // completeness anchor for chargeTotalIssue().
+    let charges: { code: string; amount: number }[] | undefined;
+    let blockChargeTotal: number | null = null;
     if (s.layout === 'row') {
       monthlyRent = cols.monthlyRent !== null ? readNumber(cellValue(sheet, r, cols.monthlyRent)) : null;
       subsidyRent = cols.subsidyRent !== null ? readNumber(cellValue(sheet, r, cols.subsidyRent)) : null;
@@ -458,6 +464,7 @@ export function applyStructure(
       // rent), while discounts/concessions are separate adjustments.
       const sums = { rent: 0, subsidy: 0, discount: 0, concession: 0 };
       const saw = { rent: false, subsidy: false, discount: false, concession: false };
+      const chargeLines: { code: string; amount: number }[] = [];
       for (let cr = r; cr <= range.e.r; cr++) {
         if (cr > r) {
           if (isUnitRow(cr)) break;
@@ -467,12 +474,20 @@ export function applyStructure(
         const desc = readString(cellValue(sheet, cr, chargeDescCol!));
         const amt = readNumber(cellValue(sheet, cr, chargeAmtCol!));
         if (!desc || amt === null) continue;
+        if (CHARGE_TOTAL_LINE.test(desc.trim())) {
+          if (blockChargeTotal === null) blockChargeTotal = amt;
+        } else {
+          chargeLines.push({ code: desc.trim(), amount: amt });
+        }
+        // Bucketing is independent of the capture above so the rent math stays
+        // byte-identical to the pre-charges walker.
         const code = desc.toLowerCase().trim();
         if (rentCodes.has(code)) { sums.rent += amt; saw.rent = true; }
         if (subsidyCodes.has(code)) { sums.subsidy += amt; saw.subsidy = true; }
         if (discountCodes.has(code)) { sums.discount += amt; saw.discount = true; }
         if (concessionCodes.has(code)) { sums.concession += amt; saw.concession = true; }
       }
+      if (chargeLines.length > 0) charges = chargeLines;
       const cents = (n: number) => Math.round(n * 100) / 100;
       monthlyRent = saw.rent ? cents(sums.rent) : null;
       subsidyRent = saw.subsidy ? cents(sums.subsidy) : null;
@@ -505,6 +520,8 @@ export function applyStructure(
       category,
       includeInUnitCount,
       sourceColumns,
+      ...(charges ? { charges } : {}),
+      ...(blockChargeTotal !== null ? { blockChargeTotal } : {}),
       monthlyRent,
       marketRent: cols.marketRent !== null ? readNumber(cellValue(sheet, scalarRow(cols.marketRent), cols.marketRent)) : null,
       subsidyRent,
@@ -588,6 +605,27 @@ function coverageIssue(result: ExtractionResult, sampleText: string): string | n
 }
 
 /**
+ * Charge-capture integrity gate: in a block layout, the charge lines the walk
+ * captured for a unit must add up to the block's own printed "Charge Total"
+ * line. A widespread mismatch means charge rows are being missed or the
+ * charge columns are misread — per-unit anchors the stated-totals verification
+ * cannot see. Returns the failure description, or null when totals reconcile
+ * (or the document prints no per-block totals to check against).
+ */
+function chargeTotalIssue(result: ExtractionResult): string | null {
+  const withTotals = result.units.filter(u => u.blockChargeTotal !== null && u.blockChargeTotal !== undefined);
+  if (withTotals.length < 10) return null; // too few printed totals to judge
+  const bad = withTotals.filter(u => {
+    const sum = (u.charges ?? []).reduce((a, c) => a + c.amount, 0);
+    return Math.abs(sum - u.blockChargeTotal!) > 0.02;
+  });
+  if (bad.length > Math.max(1, withTotals.length * 0.02)) {
+    return `the captured charge lines do not add up to the block's printed charge total for ${bad.length} of ${withTotals.length} units (e.g. unit ${bad[0].unitNumber}) — charge rows are being missed or the charge columns are misread`;
+  }
+  return null;
+}
+
+/**
  * What the fast path is allowed to accept as PROOF that the walk read every unit.
  *
  * A stated unit count is the cleanest anchor, but plenty of real exports never
@@ -653,6 +691,91 @@ function provenComplete(r: ExtractionResult): { ok: boolean; basis: string; deta
   return { ok: false, basis: '', detail: parts.join('; ') };
 }
 
+/**
+ * Fee-code narrowing audit for block layouts, applied only to an ALREADY
+ * ACCEPTED fast-path result.
+ *
+ * The hole this closes: on "Rent Roll with Lease Charges" exports whose only
+ * stated money total is itself a total-charges figure, a mapper sample that
+ * sweeps fee codes (storage, misc income) into rentChargeCodes reconciles with
+ * that total EXACTLY, while the correct rent-only mapping is also within the
+ * 0.5% band — verification cannot arbitrate, and per-unit rents silently
+ * include fees (unit 05R: rent 9,995 + storage 200 reported as 10,195).
+ *
+ * Deterministic resolution toward the mapper contract (fees are never rent):
+ * re-walk with each suspect code removed and drop the ones that behave like
+ * pure add-on fees. Every guard fails closed to the accepted result:
+ *   - only block layouts with a stated rent total to arbitrate against;
+ *   - suspects are codes not containing "rent" and not declared subsidy codes
+ *     (HAP/housing-assistance components are protected);
+ *   - a code is dropped only if its removal never INCREASES any unit's rent
+ *     (credits like SCRIE/DRIE exemptions stay put) and never nulls one;
+ *   - the narrowed walk must change something, keep every unit, still satisfy
+ *     verifyAgainstStated, and still reconcile with the stated rent total
+ *     within the same tolerance verification uses.
+ * The walk is pure code, so the extra passes cost no AI calls.
+ */
+export function narrowFeeChargeCodes(
+  sheet: XLSX.WorkSheet,
+  s: SheetStructure,
+  convention: 'applicant-over-vacant' | 'current-occupancy',
+  accepted: ExtractionResult,
+  external?: PreviewData | null
+): { result: ExtractionResult; dropped: string[] } | null {
+  if (s.layout !== 'block' || !s.block) return null;
+  const statedRent = accepted.statedSummary?.totalMonthlyRent ?? null;
+  if (statedRent === null || statedRent <= 0) return null;
+
+  const subsidy = new Set(s.block.subsidyChargeCodes.map(c => c.toLowerCase().trim()));
+  const suspects = s.block.rentChargeCodes.filter(c => {
+    const k = c.toLowerCase().trim();
+    return !k.includes('rent') && !subsidy.has(k);
+  });
+  if (suspects.length === 0) return null;
+
+  const withCodes = (codes: string[]): ExtractionResult | null =>
+    applyStructure(sheet, { ...s, block: { ...s.block!, rentChargeCodes: codes } }, convention);
+
+  // true when `trial` matches `accepted` unit-for-unit with only monotone
+  // rent decreases (a pure add-on fee was removed, never a credit or a
+  // unit's sole rent source).
+  const monotoneDecrease = (trial: ExtractionResult): boolean => {
+    if (trial.units.length !== accepted.units.length) return false;
+    for (let i = 0; i < trial.units.length; i++) {
+      if (trial.units[i].unitNumber !== accepted.units[i].unitNumber) return false;
+      const a = accepted.units[i].monthlyRent;
+      const b = trial.units[i].monthlyRent;
+      if (a === null ? b !== null : b === null || b > a) return false;
+    }
+    return true;
+  };
+
+  const dropped = suspects.filter(code => {
+    const trial = withCodes(s.block!.rentChargeCodes.filter(c => c !== code));
+    return trial !== null && monotoneDecrease(trial);
+  });
+  if (dropped.length === 0) return null;
+
+  const finalCodes = s.block.rentChargeCodes.filter(c => !dropped.includes(c));
+  if (finalCodes.length === 0) return null;
+  const narrowed = withCodes(finalCodes);
+  if (!narrowed || !monotoneDecrease(narrowed)) return null;
+  const changed = narrowed.units.some(
+    (u, i) => (u.monthlyRent ?? 0) !== (accepted.units[i].monthlyRent ?? 0)
+  );
+  if (!changed) return null;
+
+  // The narrowed read must still reconcile with the document's stated rent
+  // total on its own — otherwise the "fees" were load-bearing and the original
+  // mapping stands.
+  const sum = narrowed.units.reduce((acc, u) => acc + (u.monthlyRent ?? 0), 0);
+  if (Math.abs(sum - statedRent) > Math.max(5, statedRent * 0.005)) return null;
+
+  if (external) applyExternalStated(narrowed, external);
+  if (!verifyAgainstStated(narrowed).ok) return null;
+  return { result: narrowed, dropped };
+}
+
 export async function tryFastPath(
   sheet: XLSX.WorkSheet,
   sampleText: string,
@@ -687,8 +810,20 @@ export async function tryFastPath(
         // stand in for one (see provenComplete).
         const proof = provenComplete(result);
         if (verification.ok && proof.ok) {
-          const gap = coverageIssue(result, sampleText);
-          if (!gap) return { result, basis: proof.basis };
+          const gap = coverageIssue(result, sampleText) ?? chargeTotalIssue(result);
+          if (!gap) {
+            // Post-acceptance audit: strip fee codes the mapper swept into
+            // rentChargeCodes when the rent-only read reconciles just as well
+            // (see narrowFeeChargeCodes). Falls back to the accepted result.
+            const narrowed = narrowFeeChargeCodes(sheet, structure, convention, result, external);
+            if (narrowed) {
+              return {
+                result: narrowed.result,
+                basis: `${proof.basis}; excluded fee charge code(s) ${narrowed.dropped.join(', ')} from rent — the stated rent total reconciles without them`,
+              };
+            }
+            return { result, basis: proof.basis };
+          }
           reason = gap; // feeds the retry hint — a remapped attempt may fix it
           anchored = true;
           continue;
