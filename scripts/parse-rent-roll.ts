@@ -26,6 +26,7 @@ import { validateExtraction } from '../src/lib/validation/validators';
 import { runVerificationChecks } from '../src/lib/validation/verification';
 import { explainMismatches } from '../src/lib/validation/explainer';
 import { calculateSummaryStats } from '../src/lib/utils/summaryStats';
+import { classifyChargeCodes, collectChargeCodes } from '../src/lib/utils/chargeClassifier';
 import { estimateCostUSD, formatUSD } from '../src/lib/utils/aiCost';
 import type { AIUsage } from '../src/lib/parsers/aiClient';
 import type { ProgressEvent } from '../src/lib/types';
@@ -70,6 +71,15 @@ async function main() {
   console.error(`Parsing ${path.basename(filePath)} (${Math.round(fs.statSync(filePath).size / 1024)}KB)`);
   const result = await parseRentRoll(fs.readFileSync(filePath), path.basename(filePath), report);
 
+  // Categorize this document's own charge-code vocabulary before aggregating
+  // (see utils/chargeClassifier.ts). One small call over the distinct codes.
+  const postUsages: AIUsage[] = [];
+  const chargeCodes = collectChargeCodes(result.units);
+  if (chargeCodes.length > 0) {
+    console.error(`[${Math.floor((Date.now() - startTime) / 1000)}s] Categorizing ${chargeCodes.length} distinct charge code(s)`);
+    await classifyChargeCodes(result.units, postUsages);
+  }
+
   const calculatedStats = calculateSummaryStats(result.units);
   const validationIssues = validateExtraction(
     result.units, result.statedUnitCount, result.statedSummaryStats, calculatedStats
@@ -81,13 +91,12 @@ async function main() {
   if (failedChecks.length > 0) {
     console.error(`[${Math.floor((Date.now() - startTime) / 1000)}s] ${failedChecks.length} verification check(s) failed — asking AI to explain the mismatch`);
   }
-  const explainerUsages: AIUsage[] = [];
   const explanationSummary = await explainMismatches(
-    result.units, result.statedSummaryStats, calculatedStats, failedChecks, explainerUsages
+    result.units, result.statedSummaryStats, calculatedStats, failedChecks, postUsages
   );
-  const explainerCost = estimateCostUSD(explainerUsages);
-  const costUSD = result.costUSD !== null || explainerCost !== null
-    ? (result.costUSD ?? 0) + (explainerCost ?? 0)
+  const postCost = estimateCostUSD(postUsages);
+  const costUSD = result.costUSD !== null || postCost !== null
+    ? (result.costUSD ?? 0) + (postCost ?? 0)
     : null;
 
   const extraction = {

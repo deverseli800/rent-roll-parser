@@ -3,8 +3,21 @@
 export type UnitStatus = 'occupied' | 'vacant' | 'notice' | 'model' | 'down' | 'applicant';
 
 // Charge code categories for normalization
+/**
+ * Charge-line category. Three economic classes, which is what consumers
+ * actually need to separate:
+ *   RENT       — the contract rent itself (base_rent, subsidy)
+ *   ADJUSTMENT — reductions/losses against rent, never ancillary income
+ *                (concession, loss_to_lease, vacancy_loss)
+ *   INCOME     — everything billed on top of rent (all remaining categories)
+ * `RENT_CLASS_CATEGORIES` in utils/chargeNormalization.ts is the authority on
+ * which categories are excluded from the ancillary-income summary.
+ */
 export type ChargeCategory =
+  // rent
   | 'base_rent'
+  | 'subsidy'          // HUD/HAP/Section 8/voucher portion of contract rent
+  // ancillary income
   | 'pet'
   | 'parking'
   | 'storage'
@@ -15,9 +28,15 @@ export type ChargeCategory =
   | 'admin_fee'
   | 'deposit_waiver'
   | 'credit_builder'
-  | 'concession'
   | 'mtm_fee'
   | 'damages'
+  | 'tax_recovery'     // real estate/property tax billed back to the resident
+  | 'other_income'     // identified ancillary income with no specific bucket
+  // rent adjustments (not income)
+  | 'concession'
+  | 'loss_to_lease'    // gain/loss to lease against market
+  | 'vacancy_loss'
+  // unclassified
   | 'other';
 
 // Individual charge on a unit
@@ -152,10 +171,16 @@ export interface SummaryStats {
   averageSqft: number | null;
   averageRentPerSqft: number | null;
 
-  // Charge summary (if document has itemized charges)
+  // Charge summary (if document has itemized charges). Rent-class lines
+  // (base_rent/subsidy) are excluded from both — the rent totals above already
+  // carry them. Rent adjustments (concession/loss_to_lease/vacancy_loss) and
+  // unidentified codes (`other`) are LISTED in chargeSummary but excluded from
+  // totalChargesAmount, so the summary rows deliberately do not all sum to that
+  // total. Check for an `other` row before treating the total as complete: a
+  // large one means codes went unrecognized, not that income is missing.
   hasItemizedCharges: boolean;
   chargeSummary?: ChargeCategorySummary[];
-  totalChargesAmount?: number;  // Sum of all non-rent charges
+  totalChargesAmount?: number;  // Identified ancillary income only (see above)
 }
 
 // Stated summary values extracted from the document (not calculated)
