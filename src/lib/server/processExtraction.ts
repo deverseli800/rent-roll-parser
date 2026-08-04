@@ -3,6 +3,7 @@ import { validateExtraction } from '../validation/validators';
 import { runVerificationChecks } from '../validation/verification';
 import { explainMismatches } from '../validation/explainer';
 import { calculateSummaryStats } from '../utils/summaryStats';
+import { classifyChargeCodes, collectChargeCodes } from '../utils/chargeClassifier';
 import { updateServerExtraction } from './extractionStore';
 import type { AIUsage } from '../parsers/aiClient';
 import type { ProgressReporter } from '../parsers/extractionCore';
@@ -69,6 +70,24 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
       kind: 'info',
       message: `Extraction complete — ${result.units.length} units. Running validation and verification checks`,
     });
+    // Categorize this document's own charge-code vocabulary before aggregating:
+    // one small call over the DISTINCT codes, which no fixed keyword list can
+    // cover across property-management systems.
+    const postUsages: AIUsage[] = [];
+    const codes = collectChargeCodes(result.units);
+    if (codes.length > 0) {
+      report('validating', 'categorizing charge codes', {
+        kind: 'info',
+        message: `Categorizing ${codes.length} distinct charge code${codes.length === 1 ? '' : 's'} found across ${result.units.length} units`,
+      });
+      const { classified, changed } = await classifyChargeCodes(result.units, postUsages);
+      if (changed.length > 0) {
+        report('validating', 'categorizing charge codes', {
+          kind: 'info',
+          message: `Charge codes categorized (${classified}/${codes.length}); corrected ${changed.map(c => `${c.code} → ${c.to}`).join(', ')}`,
+        });
+      }
+    }
     const calculatedStats = calculateSummaryStats(result.units);
     const issues = validateExtraction(
       result.units,
@@ -97,17 +116,18 @@ async function runJob(id: string, buffer: Buffer, fileName: string): Promise<voi
             kind: 'verify_pass',
             message: `All ${verificationSummary.passed} verifiable checks passed — ${verificationSummary.confidence} confidence`,
           });
-    const explainerUsages: AIUsage[] = [];
     const explanationSummary = await explainMismatches(
       result.units,
       result.statedSummaryStats,
       calculatedStats,
       failedChecks,
-      explainerUsages
+      postUsages
     );
-    const explainerCost = estimateCostUSD(explainerUsages);
-    const costUSD = result.costUSD !== null || explainerCost !== null
-      ? (result.costUSD ?? 0) + (explainerCost ?? 0)
+    // postUsages covers both post-parse AI calls (charge classification and the
+    // mismatch explainer); as before, they land in cost but not the token counts.
+    const postCost = estimateCostUSD(postUsages);
+    const costUSD = result.costUSD !== null || postCost !== null
+      ? (result.costUSD ?? 0) + (postCost ?? 0)
       : null;
 
     updateServerExtraction(id, {
