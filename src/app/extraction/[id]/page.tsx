@@ -23,6 +23,7 @@ import {
   Collapse,
   UnstyledButton,
   Switch,
+  Table,
   Tooltip,
   Timeline,
   ThemeIcon,
@@ -58,6 +59,7 @@ import type { RentRollExtraction, GenericRentRollUnit, UnitStatus, ValidationIss
 import { getExtraction, saveExtraction, updateExtraction as updateStoredExtraction } from '@/lib/clientStorage';
 import { detectHighlights, getHighlightSummary, type UnitHighlights, type CellHighlight } from '@/lib/utils/outlierDetection';
 import { calculateSummaryStats, nonTenantRentFromUnits } from '@/lib/utils/summaryStats';
+import { aggregateCharges, RENT_ADJUSTMENT_CATEGORIES } from '@/lib/utils/chargeNormalization';
 import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '@/lib/utils/occupancy';
 import { modelLabel } from '@/lib/utils/modelLabels';
 import { formatUSD } from '@/lib/utils/aiCost';
@@ -856,6 +858,16 @@ function SummaryStatsCard({
   // read as an extraction error. nonTenantRent is recomputed live from units
   // when the (possibly cached) summaryStats predates the field.
   const nonTenantRent = stats.nonTenantRent ?? (units ? nonTenantRentFromUnits(units) : null);
+  // Itemized charge income (charge-block documents). Recomputed live from
+  // units when the (possibly cached) summaryStats predates the charges fields.
+  const chargeAgg =
+    stats.hasItemizedCharges && stats.chargeSummary
+      ? { summary: stats.chargeSummary, totalAmount: stats.totalChargesAmount ?? 0 }
+      : units && units.some(u => u.charges && u.charges.length > 0)
+        ? aggregateCharges(units)
+        : null;
+  const chargeCategoryLabel = (c: string) =>
+    c.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
   const rentReconciliation =
     statedStats?.totalMonthlyRent != null && stats.totalMonthlyRent != null
       ? reconcileTotalRent(statedStats.totalMonthlyRent, stats.totalMonthlyRent, nonTenantRent)
@@ -1023,7 +1035,60 @@ function SummaryStatsCard({
             {stats.averageRentPerSqft !== null ? `$${stats.averageRentPerSqft.toFixed(2)}` : '—'}
           </Text>
         </div>
+        {chargeAgg && (
+          <div>
+            <Text size="sm" c="dimmed">Ancillary Income</Text>
+            <Text size="lg" fw={600}>{formatCurrency(chargeAgg.totalAmount)}</Text>
+          </div>
+        )}
       </SimpleGrid>
+
+      {/* Itemized charge income by category (charge-block documents only).
+          Per-unit line items live in the grid's Total Charges column tooltip.
+          Rent-class lines (base_rent/subsidy) are excluded from the summary;
+          rent adjustments and unclassified codes are listed but not counted
+          in Ancillary Income (see SummaryStats.totalChargesAmount). */}
+      {chargeAgg && chargeAgg.summary.length > 0 && (
+        <>
+          <Text size="sm" c="dimmed" mt="lg" mb="sm" fw={500}>
+            Charge Income by Category (monthly, excludes contract rent)
+          </Text>
+          <Table striped withTableBorder>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Category</Table.Th>
+                <Table.Th style={{ textAlign: 'right' }}>Monthly Total</Table.Th>
+                <Table.Th style={{ textAlign: 'right' }}>Units</Table.Th>
+                <Table.Th>Charge Codes (as printed)</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {chargeAgg.summary.map(row => {
+                const notCounted = row.category === 'other' || RENT_ADJUSTMENT_CATEGORIES.has(row.category);
+                return (
+                  <Table.Tr key={row.category}>
+                    <Table.Td>
+                      {chargeCategoryLabel(row.category)}
+                      {notCounted && (
+                        <Text component="span" size="xs" c="dimmed">
+                          {row.category === 'other' ? ' (unclassified — not in Ancillary Income)' : ' (rent adjustment — not in Ancillary Income)'}
+                        </Text>
+                      )}
+                    </Table.Td>
+                    <Table.Td style={{ textAlign: 'right' }}>{formatCurrency(row.totalAmount)}</Table.Td>
+                    <Table.Td style={{ textAlign: 'right' }}>{row.unitCount}</Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed" style={{ wordBreak: 'break-word' }}>
+                        {row.rawCodes.join(', ')}
+                      </Text>
+                    </Table.Td>
+                  </Table.Tr>
+                );
+              })}
+            </Table.Tbody>
+          </Table>
+        </>
+      )}
     </Card>
   );
 }
@@ -1106,6 +1171,9 @@ export default function ExtractionPage() {
   const [saving, setSaving] = useState(false);
   const [units, setUnits] = useState<GenericRentRollUnit[]>([]);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  // Unit whose itemized charge lines are open in the breakdown modal
+  // (set by clicking a Total Charges cell).
+  const [chargeDetailUnit, setChargeDetailUnit] = useState<GenericRentRollUnit | null>(null);
   const [showAllColumns, setShowAllColumns] = useState(false);
   const [showHighlighting, setShowHighlighting] = useState(true);
   const [newUnit, setNewUnit] = useState<Partial<GenericRentRollUnit>>({
@@ -1649,8 +1717,9 @@ export default function ExtractionPage() {
       },
       {
         // Sum of the unit's itemized charge lines (rent + fees + credits) for
-        // charge-block documents; hover shows the line items. Derived, not
-        // editable — edit the source charges via re-extraction.
+        // charge-block documents. Click opens the per-line breakdown modal;
+        // hover previews the lines. Derived, not editable — edit the source
+        // charges via re-extraction.
         field: 'totalCharges',
         headerName: 'Total Charges',
         width: 130,
@@ -1658,7 +1727,16 @@ export default function ExtractionPage() {
         type: 'numericColumn',
         valueFormatter: currencyFormatter,
         tooltipValueGetter: (params) =>
-          params.data?.charges?.map((c) => `${c.code}: ${c.amount}`).join('  ·  '),
+          params.data?.charges?.length
+            ? `${params.data.charges.map((c) => `${c.code}: ${c.amount}`).join('  ·  ')}  —  click for breakdown`
+            : undefined,
+        cellStyle: (params) =>
+          params.data?.charges?.length
+            ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: '3px' }
+            : null,
+        onCellClicked: (params) => {
+          if (params.data?.charges?.length) setChargeDetailUnit(params.data);
+        },
       },
       {
         field: 'tenantName',
@@ -2010,6 +2088,50 @@ export default function ExtractionPage() {
           </div>
         </Paper>
       </Stack>
+
+      {/* Per-unit charge breakdown (opened by clicking a Total Charges cell) */}
+      <Modal
+        opened={chargeDetailUnit !== null}
+        onClose={() => setChargeDetailUnit(null)}
+        title={`Charges — Unit ${chargeDetailUnit?.unitNumber ?? ''}`}
+        size="md"
+      >
+        {chargeDetailUnit?.charges && (
+          <Table striped withTableBorder>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Charge Code (as printed)</Table.Th>
+                <Table.Th>Category</Table.Th>
+                <Table.Th style={{ textAlign: 'right' }}>Monthly Amount</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {chargeDetailUnit.charges.map((c, i) => (
+                <Table.Tr key={i}>
+                  <Table.Td>{c.code}</Table.Td>
+                  <Table.Td>
+                    <Text size="sm" c="dimmed">
+                      {c.category.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(c.amount)}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+              <Table.Tr>
+                <Table.Td fw={600}>Charge Total</Table.Td>
+                <Table.Td />
+                <Table.Td fw={600} style={{ textAlign: 'right' }}>
+                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(
+                    chargeDetailUnit.totalCharges ?? chargeDetailUnit.charges.reduce((a, c) => a + c.amount, 0)
+                  )}
+                </Table.Td>
+              </Table.Tr>
+            </Table.Tbody>
+          </Table>
+        )}
+      </Modal>
 
       {/* Add Unit Modal */}
       <Modal
