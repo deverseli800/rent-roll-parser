@@ -373,6 +373,22 @@ export function applyStructure(
     .map(ec => ({ ...ec, index: ec.index + originCol }))
     .filter(ec => !usedIdx.has(ec.index));
 
+  // A block-internal charge "Total"/"Charge Total:" line. Mapper samples
+  // sometimes emit "total" as a stopMarker (the prompt even suggests "totals"
+  // for summary sections) — but in a block layout EVERY unit's block ends with
+  // such a line, so obeying it would end the walk after the first unit
+  // (observed: a 142-unit sheet walked as 1 unit, rent sum 1,600). Stop
+  // markers therefore never break on these rows. Multi-word grand totals
+  // ("[redacted] Total:") don't match CHARGE_TOTAL_LINE and still stop
+  // the walk.
+  const isBlockTotalRow = (rr: number): boolean => {
+    if (s.layout !== 'block' || chargeDescCol === null || chargeAmtCol === null) return false;
+    const d = readString(cellValue(sheet, rr, chargeDescCol));
+    return !!d && CHARGE_TOTAL_LINE.test(d.trim()) && readNumber(cellValue(sheet, rr, chargeAmtCol)) !== null;
+  };
+  const isStopRow = (rr: number, text: string): boolean =>
+    matchesAny(text, stops) && !isBlockTotalRow(rr);
+
   const isUnitRow = (r: number): string | null => {
     const unitVal = readString(cellValue(sheet, r, cols.unitNumber!));
     if (!unitVal || unitVal.length > 30) return null;
@@ -396,7 +412,7 @@ export function applyStructure(
   for (let r = Math.max(range.s.r, s.dataStartRow - 1); r <= range.e.r; r++) {
     const joined = rowText(sheet, r, Math.min(maxCol, 12));
     if (!joined) continue;
-    if (matchesAny(joined, stops)) break;
+    if (isStopRow(r, joined)) break;
     if (matchesAny(joined, skip)) continue;
 
     const unitNumber = isUnitRow(r);
@@ -419,7 +435,7 @@ export function applyStructure(
       for (let cr = r + 1; cr <= Math.min(range.e.r, r + SCALAR_SCAN_LIMIT); cr++) {
         if (isUnitRow(cr)) break;
         const t = rowText(sheet, cr, Math.min(maxCol, 12));
-        if (!t || matchesAny(t, stops)) break;
+        if (!t || isStopRow(cr, t)) break;
         scalarEnd = cr;
       }
     }
@@ -469,7 +485,7 @@ export function applyStructure(
         if (cr > r) {
           if (isUnitRow(cr)) break;
           const t = rowText(sheet, cr, Math.min(maxCol, 12));
-          if (matchesAny(t, stops)) break;
+          if (isStopRow(cr, t)) break;
         }
         const desc = readString(cellValue(sheet, cr, chargeDescCol!));
         const amt = readNumber(cellValue(sheet, cr, chargeAmtCol!));
@@ -679,6 +695,26 @@ function provenComplete(r: ExtractionResult): { ok: boolean; basis: string; deta
         `the market total reconciles but the smallest unit market rent (${min.toFixed(2)}) is within tolerance, so a missing unit could hide inside it`
       );
     } else if (statedRent === null || statedRent <= 0) {
+      // No stated rent total to corroborate with — on documents whose only
+      // rent-ish total is a total-charges figure, a careful mapper sample
+      // correctly declines to report it as totalMonthlyRent (the prompt
+      // forbids exactly that), which used to strand a perfect walk here. The
+      // per-block printed "Charge Total" lines are document-stated anchors
+      // too: when nearly every unit carries one and the walked charge lines
+      // reproduce it to the cent, that is a stronger second anchor than any
+      // single stated figure — and it is independent of the mapper's
+      // stated-summary reading.
+      const withTotals = r.units.filter(u => u.blockChargeTotal !== null && u.blockChargeTotal !== undefined);
+      const matching = withTotals.filter(u =>
+        Math.abs((u.charges ?? []).reduce((a, c) => a + c.amount, 0) - u.blockChargeTotal!) <= 0.02
+      );
+      if (withTotals.length >= 10 && matching.length >= r.units.length * 0.9) {
+        return {
+          ok: true,
+          basis: `the stated market-rent total (${statedMarket.toFixed(2)} = walked ${sum.toFixed(2)}, every unit priced, smallest ${min.toFixed(2)} > ${tol.toFixed(2)} tolerance), corroborated by ${matching.length} per-block charge totals reconciling to the cent`,
+          detail: '',
+        };
+      }
       parts.push('the market total reconciles exactly but it is the only stated money total — no second anchor to corroborate it');
     } else {
       return {
@@ -789,7 +825,18 @@ export async function tryFastPath(
       const hint = attempt > 1
         ? `\n\nNOTE: a previous structure mapping produced a walk that failed verification (${reason.slice(0, 300)}). Re-examine the layout — the usual causes are the wrong rent column (actual in-place rent vs market/scheduled rent vs total charges) or wrong skip/stop markers.`
         : '';
-      const { structure, usage } = await mapSheetStructure(sampleText + inventory + hint);
+      // One retry on mapper-call failure: transient API errors (mid-stream
+      // terminations, 529 bursts) otherwise forfeit the whole fast path — a
+      // ~30s/$0.02 call standing in for 10+ ladder minutes. A second failure
+      // falls through to the outer catch and the AI ladder.
+      let mapped: Awaited<ReturnType<typeof mapSheetStructure>>;
+      try {
+        mapped = await mapSheetStructure(sampleText + inventory + hint);
+      } catch (e) {
+        console.warn('[excelFastPath] mapper call failed, retrying once:', e instanceof Error ? e.message.slice(0, 120) : e);
+        mapped = await mapSheetStructure(sampleText + inventory + hint);
+      }
+      const { structure, usage } = mapped;
       usages.push(usage);
 
       // Try both duplicate-row conventions (see applyStructure): whichever one
