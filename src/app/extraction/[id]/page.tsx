@@ -1604,6 +1604,43 @@ export default function ExtractionPage() {
 
   // AG Grid column definitions
   const columnDefs = useMemo<ColDef<GenericRentRollUnit>[]>(() => {
+    // One column per distinct charge code across the roll (charge-block
+    // documents), shown only under "Show all columns" so every charge line is
+    // readable without hovering or clicking. Codes are grouped
+    // case-insensitively, displayed as first printed, ordered by how many
+    // units carry them; a code carried by a single unit still gets a column.
+    const codeStats = new Map<string, { display: string; unitCount: number }>();
+    for (const u of units) {
+      const perUnit = new Set<string>();
+      for (const c of u.charges ?? []) {
+        const key = c.code.toLowerCase().trim();
+        if (!key) continue;
+        if (!codeStats.has(key)) codeStats.set(key, { display: c.code.trim(), unitCount: 0 });
+        if (!perUnit.has(key)) {
+          codeStats.get(key)!.unitCount++;
+          perUnit.add(key);
+        }
+      }
+    }
+    const chargeCodeColumns: ColDef<GenericRentRollUnit>[] = [...codeStats.entries()]
+      .sort((a, b) => b[1].unitCount - a[1].unitCount || a[0].localeCompare(b[0]))
+      .map(([key, { display, unitCount }]) => ({
+        colId: `chargeCode:${key}`,
+        headerName: display,
+        headerTooltip: `Charge code "${display}" — ${unitCount} unit${unitCount === 1 ? '' : 's'}`,
+        width: 110,
+        editable: false,
+        type: 'numericColumn',
+        valueGetter: (params) => {
+          const lines = (params.data?.charges ?? []).filter(
+            c => c.code.toLowerCase().trim() === key
+          );
+          if (lines.length === 0) return null;
+          return Math.round(lines.reduce((a, c) => a + c.amount, 0) * 100) / 100;
+        },
+        valueFormatter: currencyFormatter,
+      }));
+
     const allColumns: (ColDef<GenericRentRollUnit> & { field?: string })[] = [
       {
         field: 'unitNumber',
@@ -1738,6 +1775,10 @@ export default function ExtractionPage() {
           if (params.data?.charges?.length) setChargeDetailUnit(params.data);
         },
       },
+      // Per-code charge columns ride behind the "Show all columns" toggle
+      // only — they have no `field`, and field-less columns always pass the
+      // default columns-with-data filter below.
+      ...(showAllColumns ? chargeCodeColumns : []),
       {
         field: 'tenantName',
         headerName: 'Tenant',
@@ -1812,7 +1853,7 @@ export default function ExtractionPage() {
       if (!col.field) return true; // Keep columns without field (like delete)
       return columnsWithData[col.field];
     });
-  }, [handleDeleteUnit, showAllColumns, columnsWithData, getCellStyle, getHighlightTooltip]);
+  }, [units, handleDeleteUnit, showAllColumns, columnsWithData, getCellStyle, getHighlightTooltip]);
 
   const defaultColDef = useMemo<ColDef>(() => ({
     sortable: true,
