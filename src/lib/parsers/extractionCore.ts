@@ -595,6 +595,26 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
         );
       }
     }
+
+    // Same fatigue check for the charges array, scoped to occupied/notice
+    // units: on charge-block documents every tenanted unit carries at least a
+    // rent charge line, while vacants legitimately have none (and often
+    // cluster at the end of status-sorted rolls, which would false-trip the
+    // generic all-units comparison). The fast path fills charges
+    // deterministically and uniformly, so only AI extractions can trip this.
+    const tenanted = r.units.filter(u => u.status === 'occupied' || u.status === 'notice');
+    if (tenanted.length >= 40) {
+      const tq = Math.floor(tenanted.length / 4);
+      const chFill = (arr: ExtractedUnit[]) =>
+        arr.filter(u => u.charges && u.charges.length > 0).length / arr.length;
+      const chFirst = chFill(tenanted.slice(0, tq));
+      const chLast = chFill(tenanted.slice(-tq));
+      if (chFirst >= 0.5 && chLast < chFirst * 0.4) {
+        issues.push(
+          `The charges array is filled for ${(chFirst * 100).toFixed(0)}% of the first occupied units but only ${(chLast * 100).toFixed(0)}% of the last ones — you likely stopped listing charge lines partway through. Report EVERY charge line for EVERY unit's block, all the way to the end of the document.`
+        );
+      }
+    }
   }
 
   const statedOcc = r.statedSummary?.occupiedUnits ?? null;
