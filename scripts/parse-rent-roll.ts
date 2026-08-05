@@ -147,6 +147,12 @@ async function main() {
           (s.totalConcessions ?? null) !== null ? `concessions $${fmt(s.totalConcessions!)}` : null,
         ].filter(Boolean).join('  |  ')}`]
       : []),
+    ...(s.hasItemizedCharges && (s.totalChargesAmount ?? null) !== null
+      ? [`- **Ancillary income (identified):** $${fmt(s.totalChargesAmount ?? null)}/mo — ${(s.chargeSummary ?? [])
+          .slice(0, 5)
+          .map(c => `${c.category.replace(/_/g, ' ')} $${fmt(c.totalAmount)} (${c.unitCount}u)`)
+          .join(', ')}${(s.chargeSummary?.length ?? 0) > 5 ? ', …' : ''}`]
+      : []),
     `- **Verification:** ${verificationSummary.passed}/${verificationSummary.total} checks passed${verificationSummary.skipped > 0 ? ` (${verificationSummary.skipped} skipped — no stated value in the document to check against)` : ''} — ${verificationSummary.confidence} confidence`,
     `- **Model:** ${result.modelUsed}  |  **Tokens:** ${fmt(result.inputTokens)} in / ${fmt(result.outputTokens)} out  |  **Est. cost:** ${formatUSD(costUSD)} (cache-aware)  |  **Time:** ${Math.round((Date.now() - startTime) / 1000)}s`,
   ];
