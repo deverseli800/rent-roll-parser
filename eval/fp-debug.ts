@@ -10,7 +10,7 @@ async function main() {
   const id = process.argv[2];
   const file = fs.readdirSync('eval/corpus').find(f => f.startsWith(id))!;
   const wb = XLSX.read(fs.readFileSync(path.join('eval/corpus', file)), { type: 'buffer', cellDates: false, cellNF: true, cellText: true });
-  const sheetName = wb.SheetNames.find(n => /report1|sheet1|burroughs/i.test(n)) ?? wb.SheetNames[0];
+  const sheetName = wb.SheetNames.find(n => /report1|sheet1/i.test(n)) ?? wb.SheetNames[0];
   const sheet = wb.Sheets[sheetName];
   // build grid sample like the parser does (simplified: use sheet_to_csv rows)
   const range = XLSX.utils.decode_range(sheet['!ref']!);

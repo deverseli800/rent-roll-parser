@@ -58,8 +58,13 @@ npm run lint     # Run ESLint
 ```
 
 ## Evaluation
-A ground-truthed eval corpus lives in `eval/` (46 real rent rolls collected from
-`./data/source-documents`, DHCR docs excluded). See `eval/SPEC.md`.
+A ground-truthed eval corpus lives in `eval/` (76 real rent rolls). The corpus,
+ground truth, run outputs and manifest are all gitignored — they contain tenant
+PII and client property data and must never be committed. See `eval/SPEC.md`.
+
+**Never put real property names, addresses, tenant names or source document
+filenames in tracked files** (code comments, prompts, docs, eval scripts).
+Use invented placeholders like "124 Main Street".
 
 ```bash
 npx tsx eval/run-eval.ts            # parse (cached) + score all files

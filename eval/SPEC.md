@@ -1,10 +1,16 @@
 # Rent Roll Parser Eval Spec
 
 ## Corpus
-`eval/corpus/` holds 46 unique rent-roll files collected from
-`./data/source-documents` (classified `rent-roll` by the
-document classifier, excluding DHCR documents, blank templates, misclassified
-documents, and content duplicates). See `eval/corpus-manifest.json`.
+`eval/corpus/` holds unique rent-roll files collected from a local document
+library (excluding rent-regulation registrations, blank templates,
+misclassified documents, and content duplicates), deduped by content hash.
+Provenance is recorded in `eval/corpus-manifest.json`.
+
+**The corpus contains real documents with tenant PII and client property data.**
+`eval/corpus/`, `eval/groundtruth/`, `eval/runs/` and `eval/corpus-manifest.json`
+are all gitignored and must stay that way. Never quote a real filename, property
+name, address or tenant name in a tracked file — including in this spec, in code
+comments, or in results tables.
 
 ## Ground truth
 One JSON file per corpus file: `eval/groundtruth/<corpus-id>.json`.

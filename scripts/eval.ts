@@ -9,20 +9,17 @@ import { parseRentRoll } from '../src/lib/parsers';
 import { validateExtraction } from '../src/lib/validation/validators';
 import { calculateSummaryStats } from '../src/lib/utils/summaryStats';
 
-const SAMPLES_DIR = './data/sample-rolls';
+// Legacy v1 smoke-test harness. The maintained evaluation lives in eval/
+// (see eval/SPEC.md); this one just walks a local folder of documents.
+const SAMPLES_DIR = process.env.SAMPLES_DIR || './data/sample-rolls';
 
-// Expected unit counts for each sample file (based on stated counts in documents)
-const EXPECTED_COUNTS: Record<string, number | null> = {
-  'redacted-roll-1.pdf': 194, // Has duplicates, extracts 216 but stated is 194
-  'redacted-roll-2.pdf': 55,
-  'redacted-roll-6.xlsx': 266,
-  'redacted-roll-5.xlsx': 102,
-  'redacted-roll-3.xls': 392,
-  'redacted-roll-4.pdf': 90,
-  'Rent Roll.xlsx': 200,
-  'redacted-roll-7.xlsx': 28, // No stated count in doc
-  'redacted-roll-8.pdf': 75,
-};
+// Optional expected unit counts, keyed by filename, read from a local
+// (gitignored) file so no real document names live in the repo:
+//   data/sample-rolls/expected-counts.json  ->  { "some-roll.pdf": 194 }
+const EXPECTED_COUNTS: Record<string, number | null> = (() => {
+  const p = path.join(SAMPLES_DIR, 'expected-counts.json');
+  return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : {};
+})();
 
 async function runEval() {
   const files = fs.readdirSync(SAMPLES_DIR).filter(f =>

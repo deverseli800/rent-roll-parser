@@ -379,7 +379,7 @@ export function applyStructure(
   // such a line, so obeying it would end the walk after the first unit
   // (observed: a 142-unit sheet walked as 1 unit, rent sum 1,600). Stop
   // markers therefore never break on these rows. Multi-word grand totals
-  // ("[redacted] Total:") don't match CHARGE_TOTAL_LINE and still stop
+  // ("<property name> Total:") don't match CHARGE_TOTAL_LINE and still stop
   // the walk.
   const isBlockTotalRow = (rr: number): boolean => {
     if (s.layout !== 'block' || chargeDescCol === null || chargeAmtCol === null) return false;

@@ -1,8 +1,12 @@
 /**
- * Collect rent-roll classified files from the appraisal source repo appraisal projects
- * into eval/corpus/, deduped by content hash. Excludes DHCR docs and blank templates.
+ * Collect rent-roll classified files from a local document library into
+ * eval/corpus/, deduped by content hash. Excludes rent-regulation
+ * registrations and blank templates.
  *
- * Usage: npx tsx eval/collect-corpus.ts
+ * The source library and everything produced here stay local (gitignored) —
+ * these are real documents containing tenant PII.
+ *
+ * Usage: APPRAISALS_DIR=/path/to/library npx tsx eval/collect-corpus.ts
  */
 import * as fs from 'fs';
 import * as path from 'path';
