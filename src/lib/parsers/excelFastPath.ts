@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import type { ChargeCategory } from '../types';
 import { extractStructured, MODELS, type AIUsage } from './aiClient';
 import {
   applyExternalStated,
@@ -38,6 +39,14 @@ interface ColumnMap {
   leaseEndDate: number | null;
 }
 
+// A per-charge-code COLUMN on unit rows (see MAPPER_PROMPT): the column header
+// IS the charge code, each unit row carries an amount per code.
+interface ChargeColumn {
+  header: string;
+  index: number;
+  kind: 'rent' | 'subsidy' | 'employee_discount' | 'concession' | 'fee';
+}
+
 interface SheetStructure {
   layout: 'row' | 'block' | 'unsupported';
   dataStartRow: number; // 1-based, matching the R# labels shown to the mapper
@@ -50,6 +59,10 @@ interface SheetStructure {
     employeeDiscountChargeCodes: string[];
     concessionChargeCodes: string[];
   } | null;
+  // Row layouts where charge codes are the COLUMN HEADERS (one column per
+  // code, often with a per-row "Total Charged" column). [] / null otherwise.
+  chargeColumns: ChargeColumn[];
+  chargeTotalColumn: number | null;
   skipPatterns: string[];
   stopMarkers: string[];
   statedTotalUnits: number | null;
@@ -67,6 +80,24 @@ interface SheetStructure {
   extraColumns: { header: string; index: number }[];
 }
 
+/**
+ * Document-stated anchors a charge-column walk produces for provenComplete():
+ * per-row printed charge totals reconciling with the captured charge lines,
+ * their sum reconciling with the column's printed grand total, and an audit for
+ * candidate unit rows the walk rejected. Internal to the fast path — never
+ * serialized.
+ */
+interface ChargeColumnAnchor {
+  rowsWithTotals: number;      // units carrying a printed per-row charge total
+  rowsReconciled: number;      // of those, ones whose charge lines sum to it (±$0.02)
+  minRowTotal: number;         // smallest nonzero printed row total
+  walkedTotalSum: number;      // sum of all printed row totals the walk captured
+  statedGrandTotal: number | null; // the column's printed grand total below the units
+  orphanRows: number;          // unit-cell-bearing rows in the walked region the walk rejected
+}
+
+type FastPathResult = ExtractionResult & { chargeColumnAnchor?: ChargeColumnAnchor };
+
 // How far past a unit's anchor row the walk will look for that unit's scalar
 // attributes in a block layout. Charge blocks in these exports run a handful of
 // rows; the cap keeps a runaway scan from reaching a later section of the sheet.
@@ -80,7 +111,7 @@ const colIdx = { type: 'number', description: '0-based cell index, or -1 if this
 const STRUCTURE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['layout', 'dataStartRow', 'columns', 'block', 'skipPatterns', 'stopMarkers', 'statedTotalUnits', 'statedSummary', 'extraColumns'],
+  required: ['layout', 'dataStartRow', 'columns', 'block', 'chargeColumns', 'chargeTotalColumn', 'skipPatterns', 'stopMarkers', 'statedTotalUnits', 'statedSummary', 'extraColumns'],
   properties: {
     layout: { type: 'string', enum: ['row', 'block', 'unsupported'] },
     dataStartRow: { type: 'number' },
@@ -109,6 +140,21 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
         concessionChargeCodes: { type: 'array', items: { type: 'string' } },
       },
     },
+    chargeColumns: {
+      type: 'array',
+      description: 'For row layouts whose CHARGE CODES ARE COLUMN HEADERS (one additive charge column per code on each unit row): every such column with its header verbatim, 0-based cell index, and kind. [] for other layouts.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['header', 'index', 'kind'],
+        properties: {
+          header: { type: 'string' },
+          index: { type: 'number' },
+          kind: { type: 'string', enum: ['rent', 'subsidy', 'employee_discount', 'concession', 'fee'] },
+        },
+      },
+    },
+    chargeTotalColumn: { ...colIdx, description: 'Cell index of the per-row total-charges column ("Total Charged"/"Total Billing") summing the charge columns, or -1 when absent' },
     skipPatterns: { type: 'array', items: { type: 'string' } },
     stopMarkers: { type: 'array', items: { type: 'string' } },
     statedTotalUnits: numOrNull,
@@ -161,10 +207,16 @@ Decide:
    employeeDiscountChargeCodes = codes for recurring employee/manager discounts (e.g. "empl", "employee discount"); NOT in rentChargeCodes.
    concessionChargeCodes = codes for recurring monthly RENT concessions; NOT in rentChargeCodes.
    Charge codes are often cryptic abbreviations ("conc", "como", "empl", "rentcr"). Classify EVERY code that appears in the COLUMN VALUE INVENTORY below (if provided) using its name, sign, and magnitude: codes with clearly NEGATIVE sums are concessions/discounts/credits, not fees. concessionChargeCodes must contain ONLY rent concessions — exclude one-time/"other" concession codes (e.g. "coro" next to "como") and credits tied to a specific amenity (garage/carport/parking credits like "crgar", "crcarp" belong to no list).
-5. skipPatterns: lowercase substrings identifying NON-unit rows to skip when they appear in the unit-number cell or the first cells (e.g. "total", "summary", floorplan group headers).
-6. stopMarkers: lowercase substrings marking where unit data ENDS (e.g. "future residents/applicants", "summary groups", "unit type occupancy", "totals"). The walker stops at the first row containing any of these. Sections AFTER the stop (future residents, applicants, summaries) must not be extracted.
-7. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current RENT total — the figure matching the rent charge code alone (a "Summary of Charges by Charge Code" rent line is the best source). It is NOT a total-charges/"Lease Charges" total that adds fees (trash, pet, parking) on top of rent, and NOT market rent. A stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
-8. extraColumns: every DATA column on unit rows that you did NOT map to a field in "columns" above. Give each one's header text (verbatim) and 0-based cell index. This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE"), any legal / registered / preferential rent column, and DHCR status codes. Deterministic code copies these cells verbatim; do NOT list columns already mapped in "columns", charge-code columns, or empty/decorative columns. [] when there are none.
+5. chargeColumns / chargeTotalColumn: some ROW layouts put each charge code in its OWN COLUMN — the column headers ARE charge codes (a rent-charged column, subsidy/housing-assistance columns, fee columns like pet/garage/storage/utilities, cryptic PMS abbreviations or numeric codes) and each unit row carries an AMOUNT per code, usually with a per-row "Total Charged"/"Total" column summing them. The test is ADDITIVITY: these columns' amounts (with the rent) add up to the row's total-charges figure. A column of regulation/status/type CODES (text values, not amounts) is NEVER a charge column — it belongs in extraColumns. List every additive charge column in chargeColumns (header verbatim, 0-based data-row index) with a kind:
+   "rent" = a component of the unit's contract rent: the base/charged-rent column AND any negative rent-adjustment column that is part of the contract rent rather than a promotional discount (e.g. a preferential-rent reduction).
+   "subsidy" = a Section 8 / HAP / subsidy portion of the rent (it is part of contract rent; deterministic code reports it separately too).
+   "employee_discount" / "concession" = recurring discount/concession columns that are NOT part of contract rent.
+   "fee" = ancillary charges billed on top of rent (parking, storage, washer-dryer, pet, utilities, misc fee codes).
+   chargeTotalColumn = the per-row total column's index (-1 when absent) — NEVER list it as a chargeColumn and NEVER map it to columns.monthlyRent. Do NOT list non-additive columns (a legal/market/registered rent column belongs in columns.marketRent or extraColumns; a tenant-share or informational column belongs in extraColumns). When the sheet has chargeColumns and NO single actual-rent column, leave columns.monthlyRent = -1 — deterministic code computes each unit's rent from the "rent"+"subsidy" columns. [] and -1 for sheets without per-code charge columns.
+6. skipPatterns: lowercase substrings identifying NON-unit rows to skip when they appear in the unit-number cell or the first cells (e.g. "total", "summary", floorplan group headers).
+7. stopMarkers: lowercase substrings marking where unit data ENDS (e.g. "future residents/applicants", "summary groups", "unit type occupancy", "totals"). The walker stops at the first row containing any of these. Sections AFTER the stop (future residents, applicants, summaries) must not be extracted.
+8. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current RENT total — the figure matching the rent charge code alone (a "Summary of Charges by Charge Code" rent line is the best source). It is NOT a total-charges/"Lease Charges" total that adds fees (trash, pet, parking) on top of rent, and NOT market rent. A stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
+9. extraColumns: every DATA column on unit rows that you did NOT map to a field in "columns" above. Give each one's header text (verbatim) and 0-based cell index. This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE"), any legal / registered / preferential rent column, and DHCR status codes. Deterministic code copies these cells verbatim; do NOT list columns already mapped in "columns", charge-code columns, or empty/decorative columns. [] when there are none.
 
 If unit rows in this sheet don't share one consistent column layout, or you are unsure the mapping is exact, answer layout="unsupported" — a slower full extraction will handle it. Correctness matters more than coverage.`;
 
@@ -322,15 +374,28 @@ export async function mapSheetStructure(
     data.block.chargeDescCol = norm(data.block.chargeDescCol);
     data.block.chargeAmtCol = norm(data.block.chargeAmtCol);
   }
+  data.chargeTotalColumn = norm(data.chargeTotalColumn ?? null);
+  data.chargeColumns = (data.chargeColumns ?? []).filter(
+    c => c && typeof c.index === 'number' && c.index >= 0 && !!c.header
+  );
   return { structure: data, usage };
 }
+
+// Charge-column kind -> downstream charge category. 'fee' stays unmapped so
+// the keyword prior + per-document AI classifier decide (garage -> parking, …).
+const KIND_CATEGORY: Partial<Record<ChargeColumn['kind'], ChargeCategory>> = {
+  rent: 'base_rent',
+  subsidy: 'subsidy',
+  employee_discount: 'concession',
+  concession: 'concession',
+};
 
 /** Walk the sheet deterministically using the structure. */
 export function applyStructure(
   sheet: XLSX.WorkSheet,
   s: SheetStructure,
   dedupe: 'applicant-over-vacant' | 'current-occupancy' = 'applicant-over-vacant'
-): ExtractionResult | null {
+): FastPathResult | null {
   if (s.layout === 'unsupported' || s.columns.unitNumber === null) return null;
   if (s.layout === 'block' && (!s.block || s.block.chargeDescCol === null || s.block.chargeAmtCol === null || s.block.rentChargeCodes.length === 0)) {
     return null;
@@ -361,17 +426,54 @@ export function applyStructure(
   for (const key of Object.keys(cols) as (keyof typeof cols)[]) cols[key] = toSheetCol(cols[key]);
   const chargeDescCol = toSheetCol(s.block?.chargeDescCol ?? null);
   const chargeAmtCol = toSheetCol(s.block?.chargeAmtCol ?? null);
+  // Per-charge-code columns (row layout only): headers are the charge codes.
+  // Guard against the classic header collision ("RC" is a rent CHARGE column in
+  // some documents and a Rent-Controlled STATUS code in others): a charge
+  // column must actually hold amounts. A mapper-listed column whose populated
+  // data cells are mostly non-numeric text is a status/code column — misfiling
+  // it here would not corrupt amounts (text reads as null) but WOULD consume
+  // its index and silently drop the verbatim values from sourceColumns. Such
+  // columns are demoted to extraColumns instead.
+  const looksNumericColumn = (sheetCol: number): boolean => {
+    let filled = 0;
+    let numeric = 0;
+    for (let rr = Math.max(range.s.r, s.dataStartRow - 1); rr <= range.e.r; rr++) {
+      if (readString(cellValue(sheet, rr, sheetCol)) === null) continue;
+      filled++;
+      if (readNumber(cellValue(sheet, rr, sheetCol)) !== null) numeric++;
+    }
+    return filled === 0 || numeric >= filled * 0.5;
+  };
+  const mappedChargeCols =
+    s.layout === 'row'
+      ? (s.chargeColumns ?? []).map(cc => ({ ...cc, index: cc.index + originCol }))
+      : [];
+  const chargeCols: ChargeColumn[] = mappedChargeCols.filter(cc => looksNumericColumn(cc.index));
+  const demotedChargeCols = mappedChargeCols.filter(cc => !chargeCols.includes(cc));
+  const chargeTotalCol = s.layout === 'row' ? toSheetCol(s.chargeTotalColumn ?? null) : null;
+  // The per-row printed totals + grand total anchor only exists when both the
+  // charge columns and the total column are mapped.
+  const auditCharges = chargeCols.length > 0 && chargeTotalCol !== null;
 
   // Columns to capture verbatim into sourceColumns: the mapper's extraColumns,
   // minus any index already mapped to a first-class field (guard against the
   // mapper double-listing a mapped column).
   const usedIdx = new Set<number>();
   for (const v of Object.values(cols)) if (v !== null) usedIdx.add(v);
-  for (const v of [chargeDescCol, chargeAmtCol]) if (v !== null) usedIdx.add(v);
+  for (const v of [chargeDescCol, chargeAmtCol, chargeTotalCol]) if (v !== null) usedIdx.add(v);
+  for (const cc of chargeCols) usedIdx.add(cc.index);
   const extraCols = (s.extraColumns ?? [])
     .filter(ec => ec && typeof ec.index === 'number' && ec.index >= 0 && ec.header)
     .map(ec => ({ ...ec, index: ec.index + originCol }))
     .filter(ec => !usedIdx.has(ec.index));
+  // Demoted charge columns (text-valued, so status/code columns the mapper
+  // misfiled — see looksNumericColumn) are preserved verbatim like any other
+  // unmapped column, unless the mapper also listed them in extraColumns.
+  for (const cc of demotedChargeCols) {
+    if (!usedIdx.has(cc.index) && !extraCols.some(ec => ec.index === cc.index)) {
+      extraCols.push({ header: cc.header, index: cc.index });
+    }
+  }
 
   // A block-internal charge "Total"/"Charge Total:" line. Mapper samples
   // sometimes emit "total" as a stopMarker (the prompt even suggests "totals"
@@ -409,6 +511,12 @@ export function applyStructure(
     return unitVal;
   };
 
+  // Anchor bookkeeping for charge-column layouts: the last row that produced a
+  // unit (the grand-total scan starts below it) and rows the walk REJECTED even
+  // though their unit cell holds candidate text — a nonzero count means the
+  // walk may have dropped units, which voids the completeness proof.
+  let lastUnitRow = -1;
+  let orphanRows = 0;
   for (let r = Math.max(range.s.r, s.dataStartRow - 1); r <= range.e.r; r++) {
     const joined = rowText(sheet, r, Math.min(maxCol, 12));
     if (!joined) continue;
@@ -416,7 +524,15 @@ export function applyStructure(
     if (matchesAny(joined, skip)) continue;
 
     const unitNumber = isUnitRow(r);
-    if (!unitNumber) continue;
+    if (!unitNumber) {
+      if (auditCharges) {
+        const uv = readString(cellValue(sheet, r, cols.unitNumber!));
+        const lower = (uv ?? '').toLowerCase();
+        if (uv && uv.length <= 30 && !matchesAny(lower, skip) && !matchesAny(lower, stops)) orphanRows++;
+      }
+      continue;
+    }
+    lastUnitRow = r;
 
     // Block layout: a unit's scalar attributes (market rent, sqft, dates, type)
     // do not always sit on the row carrying the unit id. A block whose first
@@ -466,13 +582,71 @@ export function applyStructure(
     // Block layouts: every charge line captured verbatim (the unit's full
     // income picture), plus the block's printed "Charge Total" as a
     // completeness anchor for chargeTotalIssue().
-    let charges: { code: string; amount: number }[] | undefined;
+    let charges: { code: string; amount: number; category?: ChargeCategory }[] | undefined;
     let blockChargeTotal: number | null = null;
+    const cents = (n: number) => Math.round(n * 100) / 100;
     if (s.layout === 'row') {
       monthlyRent = cols.monthlyRent !== null ? readNumber(cellValue(sheet, r, cols.monthlyRent)) : null;
       subsidyRent = cols.subsidyRent !== null ? readNumber(cellValue(sheet, r, cols.subsidyRent)) : null;
       employeeDiscount = cols.employeeDiscount !== null ? readNumber(cellValue(sheet, r, cols.employeeDiscount)) : null;
       concession = cols.concession !== null ? readNumber(cellValue(sheet, r, cols.concession)) : null;
+      if (chargeCols.length > 0) {
+        // Charge-code columns: every nonzero cell is a charge line (header =
+        // code, verbatim). Zero/dash cells are the grid's "no such charge" and
+        // would only be noise. Rent-component columns also sum into the scalar
+        // fields, mirroring the block walker: subsidy is part of contract rent.
+        const chargeLines: { code: string; amount: number; category?: ChargeCategory }[] = [];
+        const sums = { rent: 0, subsidy: 0, discount: 0, concession: 0 };
+        const saw = { rent: false, subsidy: false, discount: false, concession: false };
+        for (const cc of chargeCols) {
+          const amt = readNumber(cellValue(sheet, r, cc.index));
+          if (amt === null) continue;
+          if (amt !== 0) {
+            const category = KIND_CATEGORY[cc.kind];
+            chargeLines.push({ code: cc.header.trim(), amount: amt, ...(category ? { category } : {}) });
+          }
+          // The grid fills every cell (a dash reads as numeric 0), so a zero in
+          // a subsidy/discount/concession column means "none" — only nonzero
+          // amounts latch those fields, mirroring the block walker where the
+          // flag fires only when the charge row exists. Rent keeps latching on
+          // zero: an explicit $0 rent (super/employee unit) is a real value.
+          switch (cc.kind) {
+            case 'rent': sums.rent += amt; saw.rent = true; break;
+            case 'subsidy':
+              sums.rent += amt; saw.rent = true;
+              if (amt !== 0) { sums.subsidy += amt; saw.subsidy = true; }
+              break;
+            case 'employee_discount':
+              if (amt !== 0) { sums.discount += amt; saw.discount = true; }
+              break;
+            case 'concession':
+              if (amt !== 0) { sums.concession += amt; saw.concession = true; }
+              break;
+          }
+        }
+        if (chargeLines.length > 0) charges = chargeLines;
+        if (chargeTotalCol !== null) blockChargeTotal = readNumber(cellValue(sheet, r, chargeTotalCol));
+        // A mapped scalar column always wins; the column sums fill the gaps.
+        if (monthlyRent === null && saw.rent) monthlyRent = cents(sums.rent);
+        if (subsidyRent === null && saw.subsidy) subsidyRent = cents(sums.subsidy);
+        if (employeeDiscount === null && saw.discount) employeeDiscount = cents(sums.discount);
+        if (concession === null && saw.concession) concession = cents(sums.concession);
+        // No-breakdown row: every charge column blank/zero but the printed row
+        // total is nonzero (a commercial unit whose rent is typed only into the
+        // total column). The total is the row's only rent figure — use it.
+        if (cols.monthlyRent === null && !charges &&
+            (monthlyRent === null || monthlyRent === 0) &&
+            blockChargeTotal !== null && blockChargeTotal !== 0) {
+          monthlyRent = blockChargeTotal;
+        }
+        // Dash cells in these grids read as literal zeros, including through a
+        // scalar-mapped column (a subsidy column that IS one of the charge
+        // columns). A zero subsidy/discount/concession means "none" — null,
+        // matching the AI path's "null when none" field contract.
+        if (subsidyRent === 0) subsidyRent = null;
+        if (employeeDiscount === 0) employeeDiscount = null;
+        if (concession === 0) concession = null;
+      }
     } else {
       // block: scan charge rows (including the unit row itself) until the next
       // unit row or a stop/skip boundary; bucket amounts by charge-code category.
@@ -504,7 +678,6 @@ export function applyStructure(
         if (concessionCodes.has(code)) { sums.concession += amt; saw.concession = true; }
       }
       if (chargeLines.length > 0) charges = chargeLines;
-      const cents = (n: number) => Math.round(n * 100) / 100;
       monthlyRent = saw.rent ? cents(sums.rent) : null;
       subsidyRent = saw.subsidy ? cents(sums.subsidy) : null;
       employeeDiscount = saw.discount ? cents(sums.discount) : null;
@@ -573,6 +746,37 @@ export function applyStructure(
     }
   }
 
+  // Charge-column anchor: computed over the PRE-dedupe unit list because the
+  // document's grand total sums every printed row, duplicates included.
+  let chargeColumnAnchor: ChargeColumnAnchor | undefined;
+  if (auditCharges && units.length > 0) {
+    const withTotals = units.filter(u => u.blockChargeTotal !== null && u.blockChargeTotal !== undefined);
+    const reconciled = withTotals.filter(
+      u => Math.abs((u.charges ?? []).reduce((a, c) => a + c.amount, 0) - u.blockChargeTotal!) <= 0.02
+    );
+    const minRowTotal = withTotals.reduce(
+      (m, u) => (u.blockChargeTotal! > 0 ? Math.min(m, u.blockChargeTotal!) : m),
+      Infinity
+    );
+    // The column's printed grand total: first numeric cell in the total column
+    // below the last unit row. A unit-like row in between means a later data
+    // section the walk did not extract — no cell past it may serve as anchor.
+    let statedGrandTotal: number | null = null;
+    for (let gr = lastUnitRow + 1; gr <= range.e.r; gr++) {
+      if (isUnitRow(gr)) break;
+      const v = readNumber(cellValue(sheet, gr, chargeTotalCol!));
+      if (v !== null) { statedGrandTotal = v; break; }
+    }
+    chargeColumnAnchor = {
+      rowsWithTotals: withTotals.length,
+      rowsReconciled: reconciled.length,
+      minRowTotal: Number.isFinite(minRowTotal) ? minRowTotal : 0,
+      walkedTotalSum: withTotals.reduce((a, u) => a + u.blockChargeTotal!, 0),
+      statedGrandTotal,
+      orphanRows,
+    };
+  }
+
   return {
     propertyName: null,
     statedTotalUnits: s.statedTotalUnits ?? null,
@@ -581,6 +785,7 @@ export function applyStructure(
       occupancyRate: null, occupiedUnits: null, vacantUnits: null,
     },
     units: [...byUnit.values()],
+    ...(chargeColumnAnchor ? { chargeColumnAnchor } : {}),
   };
 }
 
@@ -628,14 +833,22 @@ function coverageIssue(result: ExtractionResult, sampleText: string): string | n
  * cannot see. Returns the failure description, or null when totals reconcile
  * (or the document prints no per-block totals to check against).
  */
-function chargeTotalIssue(result: ExtractionResult): string | null {
+function chargeTotalIssue(result: FastPathResult): string | null {
   const withTotals = result.units.filter(u => u.blockChargeTotal !== null && u.blockChargeTotal !== undefined);
   if (withTotals.length < 10) return null; // too few printed totals to judge
   const bad = withTotals.filter(u => {
     const sum = (u.charges ?? []).reduce((a, c) => a + c.amount, 0);
     return Math.abs(sum - u.blockChargeTotal!) > 0.02;
   });
-  if (bad.length > Math.max(1, withTotals.length * 0.02)) {
+  // Charge-COLUMN layouts tolerate more per-row slack than block layouts: real
+  // sheets carry rows whose printed total has no column breakdown (a STORE's
+  // rent typed only into the total) or disagrees with it (a hand-edited total),
+  // and the grand-total reconciliation in provenComplete() already proves the
+  // captured row totals sum to what the document itself prints. 10% matches
+  // the anchor's own per-row bar; a systematically wrong column mapping fails
+  // both immediately.
+  const allowedFraction = result.chargeColumnAnchor ? 0.1 : 0.02;
+  if (bad.length > Math.max(1, withTotals.length * allowedFraction)) {
     return `the captured charge lines do not add up to the block's printed charge total for ${bad.length} of ${withTotals.length} units (e.g. unit ${bad[0].unitNumber}) — charge rows are being missed or the charge columns are misread`;
   }
   return null;
@@ -667,7 +880,7 @@ function chargeTotalIssue(result: ExtractionResult): string | null {
  * credits) that legitimately differs from the base-rent sum, which is why
  * verifyAgainstStated tolerates 0.5% there. It corroborates; it never proves.
  */
-function provenComplete(r: ExtractionResult): { ok: boolean; basis: string; detail: string } {
+function provenComplete(r: FastPathResult): { ok: boolean; basis: string; detail: string } {
   if (r.statedTotalUnits !== null) {
     return { ok: true, basis: `the stated unit count (${r.statedTotalUnits})`, detail: '' };
   }
@@ -722,6 +935,48 @@ function provenComplete(r: ExtractionResult): { ok: boolean; basis: string; deta
         basis: `the stated market-rent total (${statedMarket.toFixed(2)} = walked ${sum.toFixed(2)}, every unit priced, smallest ${min.toFixed(2)} > ${tol.toFixed(2)} tolerance), corroborated by the stated rent total`,
         detail: '',
       };
+    }
+  }
+
+  // Charge-column documents: even when no summary totals are stated, the sheet
+  // often prints a per-row "Total Charged" for every unit AND a grand total at
+  // the bottom of that column. Those are dozens of independent document-stated
+  // anchors: each row total must equal the captured charge columns to the cent
+  // (proving the column mapping), their sum must equal the printed grand total
+  // within a hairline (proving no charged row was dropped), and the walk must
+  // have left no unit-like row behind (covering vacants, which carry no total).
+  const a = r.chargeColumnAnchor;
+  if (a) {
+    const stated = a.statedGrandTotal;
+    if (stated === null || stated <= 0) {
+      parts.push('no printed grand total found under the per-row charge-total column');
+    } else if (a.rowsWithTotals < 10) {
+      parts.push(`only ${a.rowsWithTotals} units carry a printed per-row charge total — too few to anchor on`);
+    } else {
+      const tol = Math.max(1, stated * 0.0002);
+      if (Math.abs(a.walkedTotalSum - stated) > tol) {
+        parts.push(
+          `the charge-total column's printed grand total is ${stated.toFixed(2)} but the walked row totals sum to ${a.walkedTotalSum.toFixed(2)} (off ${Math.abs(a.walkedTotalSum - stated).toFixed(2)}, tolerance ${tol.toFixed(2)})`
+        );
+      } else if (!(a.minRowTotal > tol)) {
+        parts.push(
+          `the grand total reconciles but the smallest per-row charge total (${a.minRowTotal.toFixed(2)}) is within tolerance, so a missing charged row could hide inside it`
+        );
+      } else if (a.rowsReconciled < a.rowsWithTotals * 0.9) {
+        parts.push(
+          `only ${a.rowsReconciled} of ${a.rowsWithTotals} per-row charge totals reconcile with the captured charge columns — the charge-column mapping is suspect`
+        );
+      } else if (a.orphanRows > 0) {
+        parts.push(
+          `${a.orphanRows} row(s) in the walked region carry unit-like text but were not extracted — they could be dropped units`
+        );
+      } else {
+        return {
+          ok: true,
+          basis: `the charge-total column's printed grand total (${stated.toFixed(2)} = walked ${a.walkedTotalSum.toFixed(2)}), with ${a.rowsReconciled} of ${a.rowsWithTotals} per-row charge totals reconciling to the cent and no unit-like rows left behind`,
+          detail: '',
+        };
+      }
     }
   }
   return { ok: false, basis: '', detail: parts.join('; ') };
@@ -859,6 +1114,20 @@ export async function tryFastPath(
         if (verification.ok && proof.ok) {
           const gap = coverageIssue(result, sampleText) ?? chargeTotalIssue(result);
           if (!gap) {
+            // Charge-column documents: the printed grand total the walk was
+            // proven against is a total-CHARGES figure, which the mapper
+            // rightly refuses to file as a stated rent total. But when the
+            // walked rents themselves reconcile with it (the charge columns
+            // are all rent components), it IS the document's rent total —
+            // surface it so downstream verification checks have an anchor
+            // instead of skipping everything.
+            const anchor = result.chargeColumnAnchor;
+            if (anchor?.statedGrandTotal != null && (result.statedSummary?.totalMonthlyRent ?? null) === null) {
+              const rentSum = result.units.reduce((a, u) => a + (u.monthlyRent ?? 0), 0);
+              if (Math.abs(rentSum - anchor.statedGrandTotal) <= Math.max(5, anchor.statedGrandTotal * 0.005)) {
+                result.statedSummary.totalMonthlyRent = anchor.statedGrandTotal;
+              }
+            }
             // Post-acceptance audit: strip fee codes the mapper swept into
             // rentChargeCodes when the rent-only read reconciles just as well
             // (see narrowFeeChargeCodes). Falls back to the accepted result.
@@ -878,7 +1147,8 @@ export async function tryFastPath(
         // A remap is worth trying whenever the document offers an anchor at all.
         anchored = anchored
           || result.statedTotalUnits !== null
-          || (result.statedSummary?.totalMarketRent ?? null) !== null;
+          || (result.statedSummary?.totalMarketRent ?? null) !== null
+          || result.chargeColumnAnchor?.statedGrandTotal != null;
         reason = !verification.ok
           ? (verification.issues[0] ?? 'verification failed')
           : `no stated unit count, and the stated totals do not prove the read: ${proof.detail}`;

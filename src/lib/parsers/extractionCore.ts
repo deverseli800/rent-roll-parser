@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
+import type { ChargeCategory, GenericRentRollUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
 import { extractStructured, MaxTokensError, MODELS, modelLabel, type AIUsage } from './aiClient';
 import { createCharge } from '../utils/chargeNormalization';
 import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileUnitCount } from '../utils/occupancy';
@@ -106,7 +106,7 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
           },
           charges: {
             type: 'array',
-            description: 'For itemized charge-block documents only: EVERY charge line of this unit\'s block, verbatim (rent lines, fees, negative credits), excluding the "Charge Total"/"Total" line. [] when the document has no itemized charge rows.',
+            description: 'For documents that itemize charges (charge-code BLOCK rows under each unit, or charge-code COLUMNS whose headers are the codes): every charge line / nonzero charge cell of this unit, verbatim, excluding any "Charge Total"/"Total" line or row-total column. [] when the document itemizes charges in neither shape.',
             items: {
               type: 'object',
               additionalProperties: false,
@@ -130,10 +130,13 @@ export interface ExtractedUnit {
   category: 'residential' | 'commercial' | 'non_unit_income';
   includeInUnitCount: boolean;
   sourceColumns: { header: string; value: string }[];
-  // Every itemized charge line of the unit's block, verbatim (rent lines, fees,
-  // credits; never the Charge Total line). Categorization happens downstream in
-  // toGenericRentRollUnits. Absent for documents without itemized charges.
-  charges?: { code: string; amount: number }[];
+  // Every itemized charge line of the unit's block — or, on charge-column
+  // documents, every nonzero per-charge-code column cell — verbatim (rent
+  // lines, fees, credits; never the Charge Total line). Categorization happens
+  // downstream in toGenericRentRollUnits, except when the fast-path mapper
+  // already classified the column (category set here wins over the keyword
+  // prior). Absent for documents without itemized charges.
+  charges?: { code: string; amount: number; category?: ChargeCategory }[];
   // Fast-path internal: the block's printed "Charge Total" amount, used to
   // verify the charge lines were captured completely. Never serialized —
   // toGenericRentRollUnits does not copy it.
@@ -221,7 +224,10 @@ FIELD RULES:
 - concession: a recurring monthly concession/credit shown for the unit (charge codes like "CONC",
   "Concession", "Rent Credit"). Keep the sign as displayed (usually negative). Do NOT subtract
   concessions from monthlyRent — report them separately. null when none.
-- charges: for documents that list ITEMIZED CHARGE ROWS per unit (charge-code blocks like "Rent 1,196.00" / "Trash Removal 10.00" / "Pet Rent 35.00"), report EVERY charge line of the unit's block as { "code": <charge code/description verbatim as printed>, "amount": <number, sign as displayed> } — the rent lines themselves, every fee line (trash/pet/parking/storage/amenity), and negative credit/concession lines, but NEVER the "Charge Total"/"Total" line. This preserves the unit's full income picture; it does NOT change the field rules above (monthlyRent stays the rent-only figure, concession/employeeDiscount stay separately reported). [] for documents without itemized charge rows — column-based fees belong in sourceColumns, not here.
+- charges: report the unit's ITEMIZED CHARGES as { "code": <charge code/description verbatim as printed>, "amount": <number, sign as displayed> }, for BOTH document shapes that itemize them:
+  (a) charge-code BLOCKS — rows under the unit like "Rent 1,196.00" / "Trash Removal 10.00" / "Pet Rent 35.00": report EVERY charge line of the block — the rent lines themselves, every fee line (trash/pet/parking/storage/amenity), and negative credit/concession lines, but NEVER the "Charge Total"/"Total" line.
+  (b) charge-code COLUMNS — the column HEADERS are charge codes (a rent-charged column, subsidy columns, fee columns like pet/parking/storage, cryptic PMS abbreviations) and each unit row carries an AMOUNT per code, often with a "Total Charged" column summing them: report every NONZERO charge cell as a charge line with code = the column header verbatim, but NEVER the row-total column. Do not report zero/dash cells. Non-additive columns (legal/market rent, a tenant-share breakdown, text status/regulation codes) are not charges.
+  This preserves the unit's full income picture; it does NOT change the field rules above (monthlyRent stays the rent-only figure — for charge-column documents that is the sum of the rent-component columns incl. subsidy and any in-contract negative rent adjustment, not the total-charges figure; concession/employeeDiscount stay separately reported). [] for documents that itemize charges in neither shape — their fee columns belong in sourceColumns.
 - building: when the document covers MORE THAN ONE building/property, the building this unit belongs to, exactly as its section is labeled (e.g. "124 Main Street"). null for single-property documents.
 - tenantName: as displayed ("Last, First" stays "Last, First"). Placeholder text like "VACANT" -> null.
 - unitType: copy the EXACT text shown (e.g. "4/1" stays "4/1" — do NOT expand to "4BR/1BA"; "2/1.00" stays "2/1.00"). If the document has ANY unit type / floorplan / bedrooms-baths / use-type column, ALWAYS populate unitType from it for every unit (commercial use codes like "CM" or "Store" count). null only when no such column exists.
@@ -292,7 +298,11 @@ export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: numb
   return units.map((u, i) => {
     const charges = (u.charges ?? [])
       .filter(c => c && typeof c.amount === 'number' && c.code && !CHARGE_TOTAL_LINE.test(c.code.trim()))
-      .map(c => createCharge(c.code.trim(), c.amount));
+      // A category set upstream (the fast-path mapper classified the charge
+      // COLUMN from the actual sheet) beats the keyword prior on the bare code.
+      .map(c => (c.category
+        ? { code: c.code.trim(), amount: c.amount, category: c.category }
+        : createCharge(c.code.trim(), c.amount)));
     return {
     unitNumber: String(u.unitNumber).trim(),
     building: cleanPlaceholder(u.building),

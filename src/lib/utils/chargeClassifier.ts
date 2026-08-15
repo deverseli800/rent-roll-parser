@@ -186,7 +186,11 @@ export async function classifyChargeCodes(
   for (const u of units) {
     for (const c of u.charges ?? []) {
       const to = overrides.get(c.code);
-      if (to) c.category = to;
+      // Only lines still categorized 'other' take the override: a charge may
+      // carry a category the keyword layer did not assign (the fast-path
+      // mapper classifies charge COLUMNS from the sheet itself), and that
+      // sheet-derived category outranks a codes-only reclassification.
+      if (to && c.category === 'other') c.category = to;
     }
   }
   return { classified: overrides.size, changed, declined };
