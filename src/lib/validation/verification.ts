@@ -215,6 +215,10 @@ function checkTotalRent(
     description: 'Calculated tenant rent reconciles with stated total',
     status: reconciliation.ok ? 'passed' : 'failed',
     details: reconciliation.explanation,
+    // The structured decomposition rides along with the prose so a consumer can
+    // branch on WHY the totals differ. `basis === 'unexplained_in_tolerance'` is
+    // the one to watch: it passes, but nothing accounts for the gap.
+    reconciliation,
   };
 }
 

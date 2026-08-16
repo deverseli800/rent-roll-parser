@@ -177,16 +177,10 @@ export function reconcileVacantCount(
   return { ok, vacant, slack, diff, explanation };
 }
 
-export interface RentReconciliation {
-  ok: boolean;
-  /** stated equals tenant rent exactly (within $1) — no explanation needed */
-  exact: boolean;
-  /** the difference is exactly the rent booked on non-tenant units */
-  reconciledByNonTenantRent: boolean;
-  diff: number;
-  /** Human-readable reconciliation, e.g. "$476,705 tenant rent + $2,409 charged to model/down units = stated $479,114" */
-  explanation: string;
-}
+// Defined in types.ts so the verification output can carry it; imported and
+// re-exported here because reconcileTotalRent is the only thing that builds one.
+import type { RentReconciliation } from '../types';
+export type { RentReconciliation };
 
 /**
  * Reconcile a document's stated total monthly rent against the calculated
@@ -205,20 +199,24 @@ export function reconcileTotalRent(
   subsidyRent?: number | null
 ): RentReconciliation {
   const fmt = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
   const diff = Math.abs(stated - tenantRent);
+  const base = { exact: false, reconciledByNonTenantRent: false, diff };
 
   if (diff <= 1) {
     return {
-      ok: true, exact: true, reconciledByNonTenantRent: false, diff,
+      ...base, ok: true, exact: true, basis: 'exact', residual: 0, components: [],
       explanation: `${fmt(tenantRent)} matches stated ${fmt(stated)}`,
     };
   }
 
   const nonTenant = nonTenantRent ?? 0;
-  const residual = Math.abs(stated - (tenantRent + nonTenant));
-  if (nonTenant > 0 && residual <= Math.max(5, stated * 0.005)) {
+  const nonTenantResidual = Math.abs(stated - (tenantRent + nonTenant));
+  if (nonTenant > 0 && nonTenantResidual <= Math.max(5, stated * 0.005)) {
     return {
-      ok: true, exact: false, reconciledByNonTenantRent: true, diff,
+      ...base, ok: true, reconciledByNonTenantRent: true, basis: 'non_tenant_rent',
+      residual: r2(nonTenantResidual),
+      components: [{ label: 'rent booked to non-tenant units (model/down/vacant)', amount: r2(nonTenant) }],
       explanation: `The document's stated total includes ${fmt(nonTenant)} booked to non-tenant units (model/down/vacant), which the calculated total excludes: ${fmt(tenantRent)} tenant rent + ${fmt(nonTenant)} = ${fmt(stated)} stated`,
     };
   }
@@ -228,33 +226,69 @@ export function reconcileTotalRent(
   // subsidy is already in it. Documents commonly total the same underlying data
   // gross of those reductions, or as the tenant's share alone, or both. When one
   // of those reconstructions lands on the stated figure, the two agree and only
-  // the framing differs — say which, rather than reporting an unexplained gap.
+  // the framing differs — name which, rather than reporting an unexplained gap.
+  //
+  // Measured on a 15-document corpus: of 8 files whose totals stopped matching
+  // exactly once monthlyRent became owner-collected, 7 were accounted for to the
+  // CENT by one of these three reconstructions. Naming the reason is the whole
+  // point — the previous fallback passed anything under 1% while guessing
+  // "possibly other income or rounding", which was both unfalsifiable and, on
+  // every one of those 7 files, wrong.
   const reductions = ownerBorneReductions ?? 0;
   const subsidy = subsidyRent ?? 0;
-  const variants: { label: string; value: number }[] = [
-    { label: 'gross of owner-borne concessions/discounts', value: tenantRent - reductions },
-    { label: "the tenant's share only (excludes subsidy)", value: tenantRent - subsidy },
-    { label: "the tenant's share, gross of owner-borne concessions/discounts", value: tenantRent - reductions - subsidy },
+  const variants: { label: string; value: number; parts: { label: string; amount: number }[] }[] = [
+    {
+      label: 'gross of owner-borne concessions/discounts',
+      value: tenantRent - reductions,
+      parts: [{ label: 'owner-borne concessions/discounts added back', amount: r2(-reductions) }],
+    },
+    {
+      label: "the tenant's share only (excludes subsidy)",
+      value: tenantRent - subsidy,
+      parts: [{ label: 'third-party subsidy removed', amount: r2(-subsidy) }],
+    },
+    {
+      label: "the tenant's share, gross of owner-borne concessions/discounts",
+      value: tenantRent - reductions - subsidy,
+      parts: [
+        { label: 'owner-borne concessions/discounts added back', amount: r2(-reductions) },
+        { label: 'third-party subsidy removed', amount: r2(-subsidy) },
+      ],
+    },
   ];
+  // BEST match, not the first: these reconstructions overlap, so a document
+  // whose total is the tenant's share AND gross of reductions also lands within
+  // tolerance of the gross-only variant. Taking the first would name the wrong
+  // convention and leave the subsidy as an unexplained residual while still
+  // reporting the gap as explained — which is exactly the vagueness this
+  // decomposition exists to remove.
   const tol = Math.max(5, stated * 0.005);
-  const hit = variants.find(v => v.value !== tenantRent && Math.abs(stated - v.value) <= tol);
+  const hit = variants
+    .filter(v => v.value !== tenantRent && Math.abs(stated - v.value) <= tol)
+    .sort((a, b) => Math.abs(stated - a.value) - Math.abs(stated - b.value))[0];
   if (hit) {
     return {
-      ok: true, exact: false, reconciledByNonTenantRent: false, diff,
+      ...base, ok: true, basis: 'convention', residual: r2(Math.abs(stated - hit.value)),
+      components: hit.parts,
       explanation: `${fmt(tenantRent)} owner-collected rent vs stated ${fmt(stated)} — the document quotes ${hit.label}, which reconciles (${fmt(hit.value)}). A convention difference, not a discrepancy; the reductions and subsidy are reported per unit.`,
     };
   }
 
+  // Under tolerance but NOT accounted for. This still passes — the threshold is
+  // load-bearing for documents whose totals carry rounding or income lines we do
+  // not model — but it must not read like agreement. Everything above names a
+  // reason; this one is explicitly an unexplained residual, so a reader can tell
+  // a reconciled total from a merely tolerated one.
   if (diff <= stated * 0.01) {
     return {
-      ok: true, exact: false, reconciledByNonTenantRent: false, diff,
-      explanation: `${fmt(tenantRent)} vs stated ${fmt(stated)} — the ${fmt(diff)} difference is under 1% and not attributable to specific units (possibly other income or rounding in the document's total)`,
+      ...base, ok: true, basis: 'unexplained_in_tolerance', residual: r2(diff), components: [],
+      explanation: `${fmt(tenantRent)} vs stated ${fmt(stated)} — a ${fmt(diff)} difference (${(100 * diff / stated).toFixed(2)}%) that is UNDER the 1% tolerance but NOT accounted for by non-tenant rent, concessions or subsidy. Passing on tolerance alone; the residual is unexplained.`,
     };
   }
 
   return {
-    ok: false, exact: false, reconciledByNonTenantRent: false, diff,
-    explanation: `${fmt(tenantRent)} vs stated ${fmt(stated)} (diff ${fmt(diff)})`,
+    ...base, ok: false, basis: 'mismatch', residual: r2(diff), components: [],
+    explanation: `${fmt(tenantRent)} vs stated ${fmt(stated)} (diff ${fmt(diff)}) — not accounted for by non-tenant rent, concessions or subsidy`,
   };
 }
 

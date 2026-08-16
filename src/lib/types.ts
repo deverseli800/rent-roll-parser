@@ -220,6 +220,41 @@ export interface VerificationCheck {
   description: string;
   status: 'passed' | 'failed' | 'skipped';  // skipped = no stated value to compare
   details?: string;  // Additional context for the result
+  // Structured account of WHY a figure differs from the document's stated one,
+  // for checks that can produce it (currently total-rent). A passing check is
+  // not the same as an agreeing one: `basis` says whether the gap was named
+  // exactly or merely fell under a tolerance. See RentReconciliation.
+  reconciliation?: RentReconciliation;
+}
+
+/**
+ * How a calculated total relates to the document's stated total.
+ *
+ * `basis` is the point: a check can pass because the difference was fully
+ * accounted for, or because it happened to land inside a tolerance. Those are
+ * very different levels of assurance and used to be indistinguishable in the
+ * output — both rendered as "passed".
+ */
+export interface RentReconciliation {
+  ok: boolean;
+  basis:
+    | 'exact'                    // equal within $1
+    | 'non_tenant_rent'          // gap is rent booked to model/down/vacant units
+    | 'convention'               // gap is exactly a known framing difference
+    | 'unexplained_in_tolerance' // small enough to pass, but NOT accounted for
+    | 'mismatch';                // too large and not accounted for
+  /** stated equals tenant rent exactly (within $1) — no explanation needed */
+  exact: boolean;
+  /** the difference is exactly the rent booked on non-tenant units */
+  reconciledByNonTenantRent: boolean;
+  /** stated - calculated */
+  diff: number;
+  /** The gap this reconciliation could NOT account for. 0 when fully explained. */
+  residual: number;
+  /** Named amounts that account for the gap, in the order they were applied. */
+  components: { label: string; amount: number }[];
+  /** Human-readable reconciliation. */
+  explanation: string;
 }
 
 // Overall verification summary
