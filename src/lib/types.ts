@@ -8,10 +8,23 @@ export type UnitStatus = 'occupied' | 'vacant' | 'notice' | 'model' | 'down' | '
  * actually need to separate:
  *   RENT       — the contract rent itself (base_rent, subsidy)
  *   ADJUSTMENT — reductions/losses against rent, never ancillary income
- *                (concession, loss_to_lease, vacancy_loss)
+ *                (concession, reimbursed_credit, loss_to_lease, vacancy_loss)
  *   INCOME     — everything billed on top of rent (all remaining categories)
  * `RENT_CLASS_CATEGORIES` in utils/chargeNormalization.ts is the authority on
  * which categories are excluded from the ancillary-income summary.
+ *
+ * WHO BEARS THE REDUCTION is the axis that separates `concession` from
+ * `reimbursed_credit`, and it is the only category distinction that changes
+ * `monthlyRent`. A concession lowers what the owner collects; a reimbursed
+ * credit does not, because a third party makes the owner whole.
+ *
+ * Note the compensation CHANNEL differs too, and consumers must not double
+ * count it: `subsidy` is a third party paying RENT (cash, in the rent stream),
+ * while `reimbursed_credit` is typically an offset against an operating expense
+ * — a SCRIE credit reaches the owner as a property-tax abatement, not as rent.
+ * Counting a reimbursed credit as rent AND reducing the tax expense by the same
+ * abatement inflates value. Pick one treatment; the raw charge lines support
+ * either.
  */
 export type ChargeCategory =
   // rent
@@ -33,7 +46,11 @@ export type ChargeCategory =
   | 'tax_recovery'     // real estate/property tax billed back to the resident
   | 'other_income'     // identified ancillary income with no specific bucket
   // rent adjustments (not income)
-  | 'concession'
+  | 'concession'          // a reduction the OWNER absorbs — owner collects less
+  | 'reimbursed_credit'   // a reduction the owner is made whole for from OUTSIDE
+                          // the rent stream (SCRIE/DRIE and equivalents, credits
+                          // funded by an agency or offset by a tax abatement).
+                          // The tenant pays less; the owner does not.
   | 'loss_to_lease'    // gain/loss to lease against market
   | 'vacancy_loss'
   // unclassified

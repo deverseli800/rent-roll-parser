@@ -195,7 +195,20 @@ FIELD RULES:
   "Notice"/"NTV"/"Occupied-NTV" = notice. "Applicant"/"Pending"/"Approved" = applicant.
   "Model" = model. "Down"/"Offline" = down.
   A unit with a real tenant name is occupied even if rent is 0 (e.g., a super).
-- monthlyRent: the ACTUAL/current MONTHLY rent being charged (number, no $ or commas).
+- monthlyRent: the monthly rent the OWNER IS ENTITLED TO COLLECT for this unit (number, no $ or commas).
+  THE RULE, when a unit's rent is built from parts:
+    + rent components (base/charged rent)
+    + subsidy paid by a third party (Section 8 / HAP / voucher) — the owner receives this cash
+    - reductions the OWNER absorbs (preferential rent, discounts, concessions, courtesy credits)
+    (nothing for reductions the owner is REIMBURSED for — see below)
+  The test for a negative line is WHO ABSORBS IT. A preferential-rent reduction means the owner
+  genuinely collects less, so subtract it. A senior/disability rent-increase exemption credit
+  (SCRIE, DRIE and equivalents) means the TENANT pays less while a third party makes the owner
+  whole through a tax abatement — collectible rent is unchanged, so do NOT subtract it. Both look
+  identical on the tenant's bill; decide on the program, not the appearance.
+  Where a document prints its own per-unit total, use it as a CHECK, not a source: some documents
+  total to contract rent and others to the tenant-paid figure net of an exemption credit, so a
+  disagreement of exactly the credit is expected and correct.
   If the document shows only an ANNUAL rent for a unit, divide by 12 (round to 2 decimals).
   If a rent column shows both actual and market/projected rent, use the actual in-place rent.
   ITEMIZED CHARGE BLOCKS: many reports list each unit as a block of charge-code rows
@@ -220,14 +233,17 @@ FIELD RULES:
   separate subsidy amount.
 - employeeDiscount: a recurring employee/manager discount shown for the unit (charge codes like
   "EMPL", "Employee Discount", "Manager Credit"). Keep the sign as displayed (usually negative).
-  null when none.
-- concession: a recurring monthly concession/credit shown for the unit (charge codes like "CONC",
-  "Concession", "Rent Credit"). Keep the sign as displayed (usually negative). Do NOT subtract
-  concessions from monthlyRent — report them separately. null when none.
+  Owner-borne, so it is ALREADY subtracted from monthlyRent; reporting it here lets a consumer add
+  it back. null when none.
+- concession: a recurring monthly concession/credit the OWNER absorbs (charge codes like "CONC",
+  "Concession", "Rent Credit", preferential-rent reductions). Keep the sign as displayed (usually
+  negative). Like employeeDiscount this is ALREADY subtracted from monthlyRent and is reported
+  separately so the pre-reduction figure stays recoverable. Do NOT put reimbursed exemption
+  credits (SCRIE/DRIE) here — those belong only in charges[]. null when none.
 - charges: report the unit's ITEMIZED CHARGES as { "code": <charge code/description verbatim as printed>, "amount": <number, sign as displayed> }, for BOTH document shapes that itemize them:
   (a) charge-code BLOCKS — rows under the unit like "Rent 1,196.00" / "Trash Removal 10.00" / "Pet Rent 35.00": report EVERY charge line of the block — the rent lines themselves, every fee line (trash/pet/parking/storage/amenity), and negative credit/concession lines, but NEVER the "Charge Total"/"Total" line.
   (b) charge-code COLUMNS — the column HEADERS are charge codes (a rent-charged column, subsidy columns, fee columns like pet/parking/storage, cryptic PMS abbreviations) and each unit row carries an AMOUNT per code, often with a "Total Charged" column summing them: report every NONZERO charge cell as a charge line with code = the column header verbatim, but NEVER the row-total column. Do not report zero/dash cells. Non-additive columns (legal/market rent, a tenant-share breakdown, text status/regulation codes) are not charges.
-  This preserves the unit's full income picture; it does NOT change the field rules above (monthlyRent stays the rent-only figure — for charge-column documents that is the sum of the rent-component columns incl. subsidy and any in-contract negative rent adjustment, not the total-charges figure; concession/employeeDiscount stay separately reported). [] for documents that itemize charges in neither shape — their fee columns belong in sourceColumns.
+  This preserves the unit's full income picture; it does NOT change the field rules above (monthlyRent stays the rent-only figure — rent components + subsidy - owner-borne reductions, never the total-charges figure; concession/employeeDiscount stay separately reported as well as being subtracted). Report EVERY charge line even when you are unsure what a code means: an unrecognized code passed through with its verbatim string and amount can still be interpreted downstream, while one you omit is unrecoverable. [] for documents that itemize charges in neither shape — their fee columns belong in sourceColumns.
 - building: when the document covers MORE THAN ONE building/property, the building this unit belongs to, exactly as its section is labeled (e.g. "124 Main Street"). null for single-property documents.
 - tenantName: as displayed ("Last, First" stays "Last, First"). Placeholder text like "VACANT" -> null.
 - unitType: copy the EXACT text shown (e.g. "4/1" stays "4/1" — do NOT expand to "4BR/1BA"; "2/1.00" stays "2/1.00"). If the document has ANY unit type / floorplan / bedrooms-baths / use-type column, ALWAYS populate unitType from it for every unit (commercial use codes like "CM" or "Store" count). null only when no such column exists.
@@ -240,7 +256,11 @@ FIELD RULES:
     "non_unit_income" — an ancillary income line that is neither a dwelling nor a commercial suite: parking spaces/garages, antennas/cell towers, laundry, storage rented as income, signage/billboards.
   Classify by the document's own use/type labels. This is FACTUAL, not a legal or regulatory status: a rent-stabilized apartment is still "residential".
 - includeInUnitCount: true for residential and commercial units; false for non_unit_income line items. (Lets a consumer count dwelling+commercial units without the ancillary income rows.)
-- sourceColumns: a VERBATIM passthrough of any per-unit column present in the document that you did NOT already map to one of the fields above. For each such column with a non-empty value for this unit, add an entry { "header": <column header text, verbatim>, "value": <cell value, verbatim as a string> }. This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE/DRIE", "Preferential"), any legal / registered / preferential rent column, DHCR status codes, and any other unmapped column. Copy header and value EXACTLY as printed — do NOT interpret, normalize, translate codes, expand abbreviations, or infer meaning. Skip columns already captured by a mapped field (rent, tenant, sqft, type, dates, etc.). Return [] only when there are no unmapped columns.
+- sourceColumns: a VERBATIM passthrough of the per-unit columns you did NOT map to a field above. For each such column with a non-empty value for this unit, add { "header": <column header text, verbatim>, "value": <cell value, verbatim as a string> }. Copy header and value EXACTLY as printed — do NOT interpret, normalize, translate codes, expand abbreviations, or infer meaning.
+  A column you leave out here is GONE: the consumer cannot recover it without reopening the source document, which is the one thing this parse exists to prevent. When unsure whether a column is worth passing through, pass it through.
+  This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE/DRIE", "Preferential"), DHCR status codes, and any other unmapped column.
+  ALWAYS pass through a LEGAL / REGISTERED / MAXIMUM ALLOWABLE rent column under its own printed header, EVEN IF you also mapped it to marketRent. It is a regulatory ceiling, not an asking price, and once it is folded into marketRent nothing downstream can tell the two apart. Prefer leaving marketRent null and passing it through here.
+  Otherwise skip columns already captured by a mapped field (rent, tenant, sqft, type, dates). Return [] only when there are no unmapped columns.
 - Use null for any field the document does not provide. NEVER guess values.
 - CONSISTENCY OVER LENGTH: in long documents, populate every field for EVERY unit through the very last page/row. Do not stop filling optional fields (dates, sqft, type) partway through.
 
@@ -290,8 +310,14 @@ function cleanPlaceholder(value: string | null | undefined): string | null {
 // Total-line guard for charges: a model (or a mapper sweep) may emit the block's
 // "Total"/"Charge Total:" line as a charge despite instructions; counting it
 // would double the unit's charges. Matches "Total", "Charge Total:",
-// "Resident Total:" — not multi-word section totals or ordinary charge codes.
-export const CHARGE_TOTAL_LINE = /^([a-z]+\s+)?total:?$/i;
+// "Resident Totals" — not multi-word section totals or ordinary charge codes.
+//
+// The plural matters: MRI-style rolls print "Resident Totals", which the
+// singular-only pattern missed. The line was then captured as an ordinary
+// charge — a large POSITIVE amount with no category, which aggregateCharges
+// counts as ancillary income — and the block lost its printed total, which is
+// the anchor used to check the unit's charge lines reconcile.
+export const CHARGE_TOTAL_LINE = /^([a-z]+\s+)?totals?:?$/i;
 
 /** Convert an ExtractionResult's units to GenericRentRollUnit[] */
 export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: number): GenericRentRollUnit[] {
@@ -498,6 +524,12 @@ export interface VerificationOutcome {
   ok: boolean;
   issues: string[];
   hasStatedAnchors: boolean; // whether the doc gave us anything to verify against
+  // Reconciliations that SUCCEEDED under a different convention than the
+  // document's own. Not failures — they never affect `ok` — but worth surfacing:
+  // a stated total that is gross of concessions while the engine reports
+  // owner-collected rent is exactly the kind of divergence a consumer needs to
+  // see rather than have silently smoothed over.
+  notes: string[];
 }
 
 /**
@@ -505,6 +537,7 @@ export interface VerificationOutcome {
  */
 export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
   const issues: string[] = [];
+  const notes: string[] = [];
   let hasStatedAnchors = false;
 
   let countMatches = false;
@@ -538,9 +571,48 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
       Math.abs(sum - statedRent) > tol &&
       sumMarket > 0 &&
       Math.abs(sumMarket - statedRent) <= Math.max(5, statedRent * 0.005);
+    // Gross-vs-net guard. monthlyRent is the rent the OWNER COLLECTS, so
+    // owner-borne reductions are already subtracted. Many documents total their
+    // rent column GROSS of those reductions, so a correct extraction can now
+    // miss the stated total by exactly the concessions — and get rejected for
+    // being right. Observed on a real 386-unit roll: net 678,072 against a
+    // stated 681,604, a 3,532 gap against a 3,408 tolerance, which sent a
+    // fast-path-eligible document through the whole model ladder.
+    //
+    // Adding the reductions back reconstructs the gross figure the document is
+    // quoting. When THAT reconciles, the extraction agrees with the document and
+    // the two are simply using different conventions — which is a fact worth
+    // recording, not a failure. The stated total is kept as-is: it is a
+    // verification anchor, never a source for rent.
+    const ownerBorne = r.units.reduce(
+      (s, u) => s + (u.concession ?? 0) + (u.employeeDiscount ?? 0), 0
+    );
+    const subsidyTotal = r.units.reduce((s, u) => s + (u.subsidyRent ?? 0), 0);
+    // Documents state their rent column under several conventions. Observed on
+    // one 386-unit roll: stated 681,604 = owner-collected 678,072 + 5,367 of
+    // owner-borne reductions added back - 1,835 of subsidy removed, i.e. the
+    // tenant's share gross of concessions. Each variant is the SAME underlying
+    // data under a different convention, so a match on any of them means the
+    // extraction agrees with the document and only the framing differs.
+    const conventions: { label: string; value: number }[] = [
+      { label: 'gross of owner-borne reductions', value: sum - ownerBorne },
+      { label: 'tenant-paid (subsidy excluded)', value: sum - subsidyTotal },
+      { label: 'tenant-paid and gross of owner-borne reductions', value: sum - ownerBorne - subsidyTotal },
+    ];
+    const matchedConvention =
+      Math.abs(sum - statedRent) > tol
+        ? conventions.find(c => c.value !== sum && Math.abs(c.value - statedRent) <= tol) ?? null
+        : null;
+
     if (statedRentIsMarketTotal) {
       if (statedMarket === null) r.statedSummary.totalMarketRent = statedRent;
       r.statedSummary.totalMonthlyRent = null;
+    } else if (matchedConvention) {
+      notes.push(
+        `Document's stated rent total (${statedRent.toFixed(2)}) is quoted ${matchedConvention.label}; ` +
+        `owner-collected rent sums to ${sum.toFixed(2)}. The two reconcile (${matchedConvention.value.toFixed(2)}), ` +
+        `so this is a convention difference, not a discrepancy — subsidy and reductions are reported per unit.`
+      );
     } else if (Math.abs(sum - statedRent) > tol && !excusableExcess) {
       let hint = '';
       if (sum > statedRent * 1.02) {
@@ -645,7 +717,7 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
     issues.push('No units extracted');
   }
 
-  return { ok: issues.length === 0, issues, hasStatedAnchors };
+  return { ok: issues.length === 0, issues, hasStatedAnchors, notes };
 }
 
 /**
@@ -951,6 +1023,7 @@ export async function runExtractionLadder(
           ok: false,
           issues: [`extraction attempt failed: ${lastError.message}`],
           hasStatedAnchors: true, // force escalation to the next model
+          notes: [],
         },
       };
     }

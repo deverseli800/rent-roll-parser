@@ -34,6 +34,51 @@ interface CodeStat {
   sum: number;
 }
 
+/**
+ * The one category distinction the keyword prior is allowed to be overruled on.
+ * See the rationale at the override site below.
+ */
+const REDUCTION_PAIR: ReadonlySet<ChargeCategory> = new Set<ChargeCategory>([
+  'concession', 'reimbursed_credit',
+]);
+
+/**
+ * Whether the model's proposal for a code is allowed to stand.
+ *
+ *   accept  — take the model's category
+ *   decline — keep the keyword category, record the disagreement
+ *   noop    — nothing to do (the two agree, or neither knows)
+ *
+ * Two rules, for two different kinds of category (see RENT_DECIDING_CATEGORIES
+ * in chargeNormalization.ts):
+ *
+ * 1. The keyword layer abstained ('other') -> the model fills it in. This is
+ *    the bulk of the value: cryptic PMS abbreviations no fixed list can cover.
+ *
+ * 2. The keyword layer answered -> the model may NOT overrule it, with one
+ *    exception: concession <-> reimbursed_credit.
+ *
+ * The lockout exists because letting the model overrule keyword matches
+ * measurably degraded results (9 documents, 69 codes — see the note above). But
+ * every failure in that evidence was an ancillary-income bucket: "Service Fee"
+ * moving off admin_fee, "comm" flip-flopping between files. Those change no
+ * number the engine produces.
+ *
+ * The reduction pair is categorically different. It decides whether a reduction
+ * comes out of the OWNER's pocket, which moves monthlyRent and through it a
+ * value conclusion — and it is a distinction a keyword table provably cannot
+ * make, because both sides read as a discount on the tenant's bill. Only the
+ * sign, magnitude, neighbouring codes and program name separate them, and the
+ * model sees all four. Holding the prior final here is what pushed consumers
+ * into string-matching the raw code instead.
+ */
+export function gateProposal(from: ChargeCategory, to: ChargeCategory): 'accept' | 'decline' | 'noop' {
+  if (from === to) return 'noop';
+  if (from === 'other') return to === 'other' ? 'noop' : 'accept';
+  if (REDUCTION_PAIR.has(from) && REDUCTION_PAIR.has(to)) return 'accept';
+  return 'decline';
+}
+
 // `category` is a plain string rather than an enum on purpose: constraining it
 // to the 20 allowed values made structured-output grammar compilation flaky
 // ("Grammar compilation timed out" 400s). The prompt lists and explains every
@@ -69,9 +114,16 @@ RENT (the contract rent itself — never ancillary income):
   subsidy        HUD/HAP/Section 8/voucher portion of the rent
 
 RENT ADJUSTMENTS (reductions or losses against rent — never income):
-  concession     recurring rent concession/discount/credit to the resident
-  loss_to_lease  gain/loss to lease vs market (often a matched +/- pair, e.g. LTOR/LTOL)
-  vacancy_loss   vacancy loss/credit booked against a vacant unit's rent
+  concession         a reduction the OWNER absorbs — the owner collects less.
+                     Preferential rent (the legal/registered rent reduced by
+                     agreement), discounts, free-rent amortization, courtesy credits.
+  reimbursed_credit  a reduction the owner is MADE WHOLE for by a third party —
+                     the tenant pays less, the owner still ends up with the full
+                     rent. Senior/disability rent-increase exemption programs
+                     (SCRIE, DRIE and equivalents elsewhere), credits funded by an
+                     agency, reductions offset by a tax abatement.
+  loss_to_lease      gain/loss to lease vs market (often a matched +/- pair, e.g. LTOR/LTOL)
+  vacancy_loss       vacancy loss/credit booked against a vacant unit's rent
 
 ANCILLARY INCOME (billed on top of rent):
   pet, parking, storage, utility, trash, pest_control, internet, admin_fee,
@@ -85,6 +137,7 @@ Rules:
 - Codes are usually "ABBREV-Description". Read the description; use the abbreviation only as a hint.
 - USE THE SIGN. A negative sum is a credit/reduction (concession, vacancy_loss, or the credit half of a loss_to_lease pair), never a fee. A positive sum billed to residents is income.
 - A matched pair with equal and opposite sums (e.g. +31,957 and -31,957) is almost always loss_to_lease, not a concession.
+- CONCESSION vs REIMBURSED_CREDIT — ask WHO ABSORBS THE REDUCTION, not who benefits. Both look identical to the tenant. If nothing in the code or the document suggests a third party makes the owner whole, it is a concession. Named exemption/abatement programs are reimbursed_credit even though they read as a discount. This is the only choice here that changes a rent figure, so weigh it carefully — and when the evidence is genuinely balanced, prefer concession, since claiming reimbursement that does not exist overstates what the owner collects.
 - An insurance/liability WAIVER (e.g. "Mandatory Liability Insurance Waiver", "PDLW") is a FEE charged to the resident — other_income, NOT a concession. Only deposit-replacement products are deposit_waiver.
 - Magnitude helps: a code whose sum is comparable to total rent is base_rent or subsidy; small per-unit amounts are fees.
 - Prefer a specific category over other_income, and other_income over other. Use "other" only as a last resort.
@@ -172,25 +225,55 @@ export async function classifyChargeCodes(
   const changed: { code: string; from: ChargeCategory; to: ChargeCategory }[] = [];
   const declined: { code: string; kept: ChargeCategory; proposed: ChargeCategory }[] = [];
   for (const s of stats) {
-    const to = assigned.get(s.code);
-    if (!to) continue;
     const from = normalizeChargeCode(s.code);
-    if (from !== 'other') {
-      if (from !== to) declined.push({ code: s.code, kept: from, proposed: to });
-      continue;
+    const to = assigned.get(s.code);
+    if (to) {
+      switch (gateProposal(from, to)) {
+        case 'accept':
+          overrides.set(s.code, to);
+          changed.push({ code: s.code, from, to });
+          continue;
+        case 'decline':
+          declined.push({ code: s.code, kept: from, proposed: to });
+          continue;
+        case 'noop':
+          break;
+      }
     }
-    if (to === 'other') continue;
-    overrides.set(s.code, to);
-    changed.push({ code: s.code, from, to });
+    // No override to apply from the model — but a NAMED-PROGRAM keyword answer
+    // still has to reach the charge lines.
+    //
+    // Charge lines do not always start at the keyword category. On the
+    // charge-COLUMN fast path the category comes from the column's ROLE, and a
+    // negative column the mapper called a concession lands on every line as
+    // 'concession'. If the keyword prior recognises the code as a named
+    // exemption program, that sheet-derived label is wrong — and the loop above
+    // will not fix it, because when the model AGREES with the keyword the gate
+    // returns 'noop' and records no override. Two correct answers were
+    // producing a wrong one (observed: a real SCRIE column staying 'concession',
+    // understating rent by the credit on every affected unit).
+    //
+    // Only the reduction pair is propagated this way: the keyword list for it is
+    // deliberately narrow (named programs only), so it is high-confidence enough
+    // to overrule a column role, which carries no information about who is
+    // reimbursed.
+    if (REDUCTION_PAIR.has(from)) overrides.set(s.code, from);
   }
   for (const u of units) {
     for (const c of u.charges ?? []) {
       const to = overrides.get(c.code);
+      if (!to) continue;
       // Only lines still categorized 'other' take the override: a charge may
       // carry a category the keyword layer did not assign (the fast-path
       // mapper classifies charge COLUMNS from the sheet itself), and that
       // sheet-derived category outranks a codes-only reclassification.
-      if (to && c.category === 'other') c.category = to;
+      //
+      // The reduction pair is again the exception, in both directions: the
+      // sheet-derived category comes from a column KIND, which carries no
+      // information about who is reimbursed either.
+      if (c.category === 'other' || (REDUCTION_PAIR.has(c.category) && REDUCTION_PAIR.has(to))) {
+        c.category = to;
+      }
     }
   }
   return { classified: overrides.size, changed, declined };

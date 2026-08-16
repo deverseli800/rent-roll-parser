@@ -29,7 +29,7 @@ export interface GroundTruthUnit {
   // amount; extra extracted lines are not penalized (a ground truth may list
   // only the lines that matter). null/absent when the document prints no
   // itemized charges for this unit.
-  charges?: { code: string; amount: number }[] | null;
+  charges?: { code: string; amount: number; category?: string | null }[] | null;
 }
 
 export interface GroundTruth {
@@ -240,6 +240,49 @@ function chargesCaptured(
 }
 
 /**
+ * Grade the charge CATEGORIES that decide money.
+ *
+ * Deliberately scores only the rent-deciding categories — the ones whose value
+ * changes monthlyRent (base_rent, subsidy, concession, reimbursed_credit,
+ * loss_to_lease, vacancy_loss). The ancillary-income flavours (pet vs parking
+ * vs storage) change no number the engine produces, and grading them here would
+ * bury a rent regression under rollup noise.
+ *
+ * Only ground-truth lines that CARRY an expected category are graded, so
+ * existing ground truth without categories neither passes nor fails — it is
+ * simply not counted. A line whose expected category is rent-deciding but whose
+ * extracted category is missing counts as wrong: silence is not a pass when the
+ * answer moves rent.
+ */
+const RENT_DECIDING = new Set([
+  'base_rent', 'subsidy', 'concession', 'reimbursed_credit', 'loss_to_lease', 'vacancy_loss',
+]);
+
+function chargeCategoriesMatch(
+  expected: { code: string; amount: number; category?: string | null }[] | null | undefined,
+  actual: { code: string; amount: number; category?: string | null }[] | undefined
+): boolean | null {
+  if (!expected || expected.length === 0) return null;
+  const graded = expected.filter(e => e.category && RENT_DECIDING.has(String(e.category)));
+  if (graded.length === 0) return null;
+  const pool = (actual ?? []).map(c => ({
+    code: normCode(c.code), amount: c.amount, category: c.category ?? null, used: false,
+  }));
+  for (const want of graded) {
+    const w = normCode(want.code);
+    const hit = pool.find(p =>
+      !p.used &&
+      Math.abs(p.amount - want.amount) <= 0.02 &&
+      (p.code === w || (w.length >= 3 && (p.code.includes(w) || w.includes(p.code))))
+    );
+    if (!hit) return false;
+    hit.used = true;
+    if (String(hit.category ?? '') !== String(want.category)) return false;
+  }
+  return true;
+}
+
+/**
  * Align extracted units to ground truth units by normalized unit number.
  * Handles multi-property files where one side may carry a building prefix:
  * falls back to suffix matching when exact normalized match fails and the
@@ -292,11 +335,19 @@ function alignUnits(gtUnits: GroundTruthUnit[], extracted: GenericRentRollUnit[]
 const FIELD_ORDER = [
   'status', 'monthlyRent', 'tenantName', 'unitSqft', 'unitType',
   'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate',
-  'category', 'regulation', 'charges',
+  'category', 'regulation', 'charges', 'chargeCategories',
 ] as const;
 
 export function scoreFile(gt: GroundTruth, extracted: GenericRentRollUnit[]): FileScore {
-  const fields = FIELD_ORDER.filter(f => gt.documentFields.includes(f));
+  // 'chargeCategories' rides along with 'charges' rather than needing its own
+  // documentFields entry: it grades the same ground-truth lines, and any line
+  // without an expected category scores as null and is skipped. That way ground
+  // truth gains category grading the moment categories are added to it, with no
+  // corpus-wide edit and no risk of silently grading nothing.
+  const fields = FIELD_ORDER.filter(f =>
+    gt.documentFields.includes(f) ||
+    (f === 'chargeCategories' && gt.documentFields.includes('charges'))
+  );
   const mapping = alignUnits(gt.units, extracted);
   const matchedExtracted = new Set(mapping.values());
 
@@ -378,6 +429,16 @@ export function scoreFile(gt: GroundTruth, extracted: GenericRentRollUnit[]): Fi
           ok = chargesCaptured(g.charges, e.charges);
           actual = e.charges ?? null;
           break;
+        case 'chargeCategories': {
+          const verdict = chargeCategoriesMatch(g.charges, e.charges);
+          // null = this unit's ground truth carries no rent-deciding category
+          // to grade. Skip it entirely rather than scoring it as a pass, which
+          // would dilute the field toward 100% on ungraded corpus files.
+          if (verdict === null) continue;
+          ok = verdict;
+          actual = e.charges ?? null;
+          break;
+        }
       }
       fieldBreakdown[f].total++;
       if (ok) fieldBreakdown[f].correct++;

@@ -91,8 +91,71 @@ Target: macro-average field accuracy >= 95% (achieved: see eval/runs/).
 - Structured outputs (`output_config.format` json_schema) guarantee valid JSON; all
   calls stream (required for 64K max_tokens).
 
+## Capture vs derivation (the contract)
+
+Two obligations, held to different standards. Capture failures are
+unrecoverable; derivation failures are not.
+
+- **Capture is non-negotiable.** `charges[]` `{code, amount}` and
+  `sourceColumns` are a verbatim transcription of the document. A column or
+  charge line that does not survive the parse cannot be reconstructed by anyone
+  — the consumer has to reopen the source file, which is the one thing this
+  engine exists to prevent. `applyStructure` therefore captures EVERY populated
+  column deterministically; the mapper decides only what gets PROMOTED to a
+  first-class field, never what is allowed to exist. Do not reintroduce an
+  AI-built allow-list here.
+- **Derivation is best-effort but must be honest.** `monthlyRent`, the summary
+  stats and every `category` are opinions layered on top. A consumer who
+  disagrees recomputes from the raw record. That only works if the raw record is
+  complete, which is why the order matters.
+
+## monthlyRent = owner-collected rent
+
+`monthlyRent` is what the owner is contractually entitled to collect:
+
+    + rent components (base/charged rent)
+    + subsidy (Section 8/HAP — a third party paying rent, owner receives cash)
+    - owner-borne reductions (preferential rent, concessions, employee discounts)
+    (reimbursed credits excluded entirely — neither added nor subtracted)
+
+The axis is WHO BEARS THE REDUCTION, and it is the only category distinction
+that changes a rent figure:
+
+- `concession` — the owner absorbs it, so collectible rent really is lower.
+- `reimbursed_credit` — a third party makes the owner whole (SCRIE/DRIE and
+  equivalents), so collectible rent is unchanged.
+
+Note the compensation CHANNEL differs and consumers must not double count:
+`subsidy` is cash in the rent stream, while a reimbursed credit typically
+reaches the owner as a property-tax abatement. Counting it as rent AND reducing
+the tax expense inflates value. The raw charge lines support either treatment.
+
+**KNOWN GAP — a mapped rent column wins.** The subtraction above happens where
+rent is DERIVED from charge lines. When the fast-path mapper maps a scalar rent
+column, `applyStructure` takes that column verbatim and owner-borne reductions
+are NOT subtracted, so `monthlyRent` is whatever the document printed — gross.
+Measured on a 15-file corpus: of 5 files carrying concessions, 4 moved and 1
+(411 units, ~$533K/mo) did not move at all, because its rent came from a mapped
+column. So the layout-dependence this change set out to remove is reduced, not
+eliminated: it is now derived-vs-mapped rather than block-vs-column. Closing it
+means either preferring the derived figure when charge lines reconcile to the
+printed row total, or recomputing rent after charge classification. Both are
+real changes to how the walk picks a rent source — do not paper over it by
+subtracting the scalar `concession` field from a mapped column, which would
+double-subtract on the derived path.
+
+Charge categories come in two tiers — `RENT_DECIDING_CATEGORIES` in
+`utils/chargeNormalization.ts` is the authority. The six rent-deciding ones move
+money and are worth reconciling against printed totals; the ancillary-income
+flavours (pet vs parking vs storage) change no engine output and exist for
+cross-document aggregation. Spend verification effort accordingly.
+
 ## Important Patterns
 - Parsers use Claude to extract JSON, validated with Zod schemas
 - Verification checks compare stated document values vs calculated values
 - UI shows only columns with data by default (toggle for all columns)
 - Verification checks panel is collapsible (starts collapsed)
+- The AI charge classifier may fill in codes the keyword prior abstained on, and
+  may correct `concession` <-> `reimbursed_credit`, but may not overrule the
+  prior otherwise (`gateProposal` in `utils/chargeClassifier.ts` — the rationale
+  and the measurements behind it are in that file)

@@ -198,7 +198,11 @@ export interface RentReconciliation {
 export function reconcileTotalRent(
   stated: number,
   tenantRent: number,
-  nonTenantRent: number | null | undefined
+  nonTenantRent: number | null | undefined,
+  // Owner-borne reductions (negative) and the subsidy portion, when known.
+  // Used to name a convention difference precisely instead of guessing at it.
+  ownerBorneReductions?: number | null,
+  subsidyRent?: number | null
 ): RentReconciliation {
   const fmt = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
   const diff = Math.abs(stated - tenantRent);
@@ -216,6 +220,28 @@ export function reconcileTotalRent(
     return {
       ok: true, exact: false, reconciledByNonTenantRent: true, diff,
       explanation: `The document's stated total includes ${fmt(nonTenant)} booked to non-tenant units (model/down/vacant), which the calculated total excludes: ${fmt(tenantRent)} tenant rent + ${fmt(nonTenant)} = ${fmt(stated)} stated`,
+    };
+  }
+
+  // Convention difference. The calculated figure is the rent the OWNER
+  // COLLECTS, so owner-borne reductions are already out of it and third-party
+  // subsidy is already in it. Documents commonly total the same underlying data
+  // gross of those reductions, or as the tenant's share alone, or both. When one
+  // of those reconstructions lands on the stated figure, the two agree and only
+  // the framing differs — say which, rather than reporting an unexplained gap.
+  const reductions = ownerBorneReductions ?? 0;
+  const subsidy = subsidyRent ?? 0;
+  const variants: { label: string; value: number }[] = [
+    { label: 'gross of owner-borne concessions/discounts', value: tenantRent - reductions },
+    { label: "the tenant's share only (excludes subsidy)", value: tenantRent - subsidy },
+    { label: "the tenant's share, gross of owner-borne concessions/discounts", value: tenantRent - reductions - subsidy },
+  ];
+  const tol = Math.max(5, stated * 0.005);
+  const hit = variants.find(v => v.value !== tenantRent && Math.abs(stated - v.value) <= tol);
+  if (hit) {
+    return {
+      ok: true, exact: false, reconciledByNonTenantRent: false, diff,
+      explanation: `${fmt(tenantRent)} owner-collected rent vs stated ${fmt(stated)} — the document quotes ${hit.label}, which reconciles (${fmt(hit.value)}). A convention difference, not a discrepancy; the reductions and subsidy are reported per unit.`,
     };
   }
 

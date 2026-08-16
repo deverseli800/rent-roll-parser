@@ -204,7 +204,9 @@ function checkTotalRent(
   const reconciliation = reconcileTotalRent(
     statedStats.totalMonthlyRent,
     calculatedStats.totalMonthlyRent,
-    calculatedStats.nonTenantRent
+    calculatedStats.nonTenantRent,
+    (calculatedStats.totalConcessions ?? 0) + (calculatedStats.totalEmployeeDiscount ?? 0),
+    calculatedStats.totalSubsidyRent
   );
 
   return {

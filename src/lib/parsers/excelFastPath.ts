@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { ChargeCategory } from '../types';
+import { normalizeChargeCode } from '../utils/chargeNormalization';
 import { extractStructured, MODELS, type AIUsage } from './aiClient';
 import {
   applyExternalStated,
@@ -50,6 +51,11 @@ interface ChargeColumn {
 interface SheetStructure {
   layout: 'row' | 'block' | 'unsupported';
   dataStartRow: number; // 1-based, matching the R# labels shown to the mapper
+  // 1-based row carrying the column HEADER text, or -1 when the sheet has none.
+  // Only used to label captured columns in sourceColumns; applyStructure falls
+  // back to a heuristic scan when it is absent or implausible, so a bad value
+  // costs header quality, never data.
+  headerRow: number;
   columns: ColumnMap;
   block: {
     chargeDescCol: number | null;
@@ -58,6 +64,10 @@ interface SheetStructure {
     subsidyChargeCodes: string[];
     employeeDiscountChargeCodes: string[];
     concessionChargeCodes: string[];
+    // Credits the OWNER is reimbursed for from outside the rent stream
+    // (SCRIE/DRIE and equivalents). Excluded from monthlyRent in both
+    // directions: never added, never subtracted.
+    reimbursedCreditChargeCodes: string[];
   } | null;
   // Row layouts where charge codes are the COLUMN HEADERS (one column per
   // code, often with a per-row "Total Charged" column). [] / null otherwise.
@@ -74,9 +84,11 @@ interface SheetStructure {
     occupiedUnits: number | null;
     vacantUnits: number | null;
   };
-  // Unit-row columns NOT mapped to a known field above; captured verbatim into
-  // each unit's sourceColumns (e.g. a rent-regulation/lease-type column, a
-  // legal/registered rent column, DHCR codes).
+  // Unit-row columns NOT mapped to a known field above. NO LONGER decides what
+  // survives into sourceColumns — applyStructure captures every populated column
+  // deterministically (see buildCaptureColumns). Kept only as a source of
+  // mapper-supplied header TEXT for columns whose header cell is blank or
+  // stacked across rows.
   extraColumns: { header: string; index: number }[];
 }
 
@@ -111,10 +123,11 @@ const colIdx = { type: 'number', description: '0-based cell index, or -1 if this
 const STRUCTURE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['layout', 'dataStartRow', 'columns', 'block', 'chargeColumns', 'chargeTotalColumn', 'skipPatterns', 'stopMarkers', 'statedTotalUnits', 'statedSummary', 'extraColumns'],
+  required: ['layout', 'dataStartRow', 'headerRow', 'columns', 'block', 'chargeColumns', 'chargeTotalColumn', 'skipPatterns', 'stopMarkers', 'statedTotalUnits', 'statedSummary', 'extraColumns'],
   properties: {
     layout: { type: 'string', enum: ['row', 'block', 'unsupported'] },
     dataStartRow: { type: 'number' },
+    headerRow: { type: 'number', description: 'R-number of the row holding the column header text, or -1 if the sheet has no header row.' },
     columns: {
       type: 'object',
       additionalProperties: false,
@@ -130,7 +143,7 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
     block: {
       type: 'object',
       additionalProperties: false,
-      required: ['chargeDescCol', 'chargeAmtCol', 'rentChargeCodes', 'subsidyChargeCodes', 'employeeDiscountChargeCodes', 'concessionChargeCodes'],
+      required: ['chargeDescCol', 'chargeAmtCol', 'rentChargeCodes', 'subsidyChargeCodes', 'employeeDiscountChargeCodes', 'concessionChargeCodes', 'reimbursedCreditChargeCodes'],
       properties: {
         chargeDescCol: colIdx,
         chargeAmtCol: colIdx,
@@ -138,6 +151,7 @@ const STRUCTURE_SCHEMA: Record<string, unknown> = {
         subsidyChargeCodes: { type: 'array', items: { type: 'string' } },
         employeeDiscountChargeCodes: { type: 'array', items: { type: 'string' } },
         concessionChargeCodes: { type: 'array', items: { type: 'string' } },
+        reimbursedCreditChargeCodes: { type: 'array', items: { type: 'string' } },
       },
     },
     chargeColumns: {
@@ -193,11 +207,12 @@ Decide:
    - "block": each unit is a unit row followed by charge-code rows (Rent, Trash, Pet...) and usually a Total row.
    - "unsupported": anything else (multi-section sheets with different column sets, pivoted/transposed data, aggregate-only sheets, template/sample data).
 2. dataStartRow: the R-number of the FIRST actual unit row.
+2b. headerRow: the R-number of the row holding the column HEADER text (-1 if the sheet has none). When headers are stacked across several rows, give the LAST/most specific one — the row whose labels sit directly above the data.
 3. columns: 0-based cell index for each field on UNIT rows (-1 if absent).
    tenantName2: when first and last names occupy TWO separate columns, map both (tenantName + tenantName2); else -1.
    If lease start and end share ONE column (e.g. "1/1/25 - 12/31/25"), give BOTH leaseStartDate and leaseEndDate that same index.
    monthlyRent for "row" layout = the actual/current lease rent column (NOT market/scheduled/budgeted rent).
-   marketRent = the market/asking/scheduled rent column when one exists (-1 when absent).
+   marketRent = the market/asking/scheduled rent column when one exists (-1 when absent). A LEGAL / REGISTERED / MAXIMUM ALLOWABLE rent column is NOT market rent — it is a regulatory ceiling, not an asking price. Leave marketRent = -1 rather than mapping one there; deterministic code captures it verbatim by its own header.
    subsidyRent = a column showing the subsidy/HAP/Section-8 portion of the rent (-1 when absent).
    employeeDiscount = a column with a recurring employee/manager discount (-1 when absent).
    concession = a column with a recurring monthly concession/credit (-1 when absent).
@@ -205,18 +220,19 @@ Decide:
 4. block (for layout="row" use {chargeDescCol:-1, chargeAmtCol:-1} and [] for every code list; for layout="block"): chargeDescCol/chargeAmtCol = cell indices of charge description and amount on CHARGE rows, and rentChargeCodes = the exact charge-code strings whose amounts make up the unit's rent (e.g. ["rent"], ["rnt"], ["rent", "housing assistance rent"]). Include rent-subsidy codes; EXCLUDE fee codes (trash, pet, parking, amenity) and total lines.
    subsidyChargeCodes = the subset of rentChargeCodes that are subsidy/housing-assistance codes (also keep them in rentChargeCodes — monthlyRent stays the TOTAL contract rent).
    employeeDiscountChargeCodes = codes for recurring employee/manager discounts (e.g. "empl", "employee discount"); NOT in rentChargeCodes.
-   concessionChargeCodes = codes for recurring monthly RENT concessions; NOT in rentChargeCodes.
+   concessionChargeCodes = codes for recurring monthly RENT concessions the OWNER absorbs — preferential-rent reductions, discounts, courtesy credits. The owner collects less because of these. NOT in rentChargeCodes.
+   reimbursedCreditChargeCodes = codes for reductions the owner is MADE WHOLE for by a third party: senior/disability rent-increase exemption programs (SCRIE, DRIE and equivalents), agency-funded credits, reductions offset by a tax abatement. The tenant pays less but the owner does not. NOT in rentChargeCodes or concessionChargeCodes. Ask WHO ABSORBS THE REDUCTION — both kinds look like a discount on the tenant's bill, so decide on the program, not the appearance. When the evidence is genuinely balanced, put the code in concessionChargeCodes: assuming a reimbursement that does not exist overstates the owner's rent.
    Charge codes are often cryptic abbreviations ("conc", "como", "empl", "rentcr"). Classify EVERY code that appears in the COLUMN VALUE INVENTORY below (if provided) using its name, sign, and magnitude: codes with clearly NEGATIVE sums are concessions/discounts/credits, not fees. concessionChargeCodes must contain ONLY rent concessions — exclude one-time/"other" concession codes (e.g. "coro" next to "como") and credits tied to a specific amenity (garage/carport/parking credits like "crgar", "crcarp" belong to no list).
 5. chargeColumns / chargeTotalColumn: some ROW layouts put each charge code in its OWN COLUMN — the column headers ARE charge codes (a rent-charged column, subsidy/housing-assistance columns, fee columns like pet/garage/storage/utilities, cryptic PMS abbreviations or numeric codes) and each unit row carries an AMOUNT per code, usually with a per-row "Total Charged"/"Total" column summing them. The test is ADDITIVITY: these columns' amounts (with the rent) add up to the row's total-charges figure. A column of regulation/status/type CODES (text values, not amounts) is NEVER a charge column — it belongs in extraColumns. List every additive charge column in chargeColumns (header verbatim, 0-based data-row index) with a kind:
-   "rent" = a component of the unit's contract rent: the base/charged-rent column AND any negative rent-adjustment column that is part of the contract rent rather than a promotional discount (e.g. a preferential-rent reduction).
-   "subsidy" = a Section 8 / HAP / subsidy portion of the rent (it is part of contract rent; deterministic code reports it separately too).
-   "employee_discount" / "concession" = recurring discount/concession columns that are NOT part of contract rent.
+   "rent" = a POSITIVE component of the unit's charged rent (the base/charged-rent column). Negative rent-adjustment columns are never "rent" — see "concession" below.
+   "subsidy" = a Section 8 / HAP / voucher portion of the rent: a third party paying rent INTO the unit, so the amounts are POSITIVE. The owner receives this cash, so deterministic code counts it in rent and also reports it separately. A NEGATIVE column under a subsidy-sounding heading is not this — it is an exemption credit, and code reclassifies it automatically from the column's sign.
+   "employee_discount" / "concession" = recurring reductions the OWNER absorbs, including preferential-rent reductions (the legal/registered rent lowered by agreement). The owner collects less, so deterministic code SUBTRACTS these from rent and reports them separately.
    "fee" = ancillary charges billed on top of rent (parking, storage, washer-dryer, pet, utilities, misc fee codes).
-   chargeTotalColumn = the per-row total column's index (-1 when absent) — NEVER list it as a chargeColumn and NEVER map it to columns.monthlyRent. Do NOT list non-additive columns (a legal/market/registered rent column belongs in columns.marketRent or extraColumns; a tenant-share or informational column belongs in extraColumns). When the sheet has chargeColumns and NO single actual-rent column, leave columns.monthlyRent = -1 — deterministic code computes each unit's rent from the "rent"+"subsidy" columns. [] and -1 for sheets without per-code charge columns.
+   chargeTotalColumn = the per-row total column's index (-1 when absent) — NEVER list it as a chargeColumn and NEVER map it to columns.monthlyRent. Do NOT list non-additive columns as chargeColumns (a legal/registered rent column, a market/asking rent column, a tenant-share or informational column — none of these are charge components). You do not need to route them anywhere: every populated column is captured verbatim regardless of what you list. When the sheet has chargeColumns and NO single actual-rent column, leave columns.monthlyRent = -1 — deterministic code computes each unit's rent from the "rent"+"subsidy" columns. [] and -1 for sheets without per-code charge columns.
 6. skipPatterns: lowercase substrings identifying NON-unit rows to skip when they appear in the unit-number cell or the first cells (e.g. "total", "summary", floorplan group headers).
 7. stopMarkers: lowercase substrings marking where unit data ENDS (e.g. "future residents/applicants", "summary groups", "unit type occupancy", "totals"). The walker stops at the first row containing any of these. Sections AFTER the stop (future residents, applicants, summaries) must not be extracted.
 8. statedTotalUnits / statedSummary: totals STATED in the document itself (often in the last rows). null when absent. If the stated rent total is annual, divide by 12. totalMonthlyRent = the ACTUAL/current RENT total — the figure matching the rent charge code alone (a "Summary of Charges by Charge Code" rent line is the best source). It is NOT a total-charges/"Lease Charges" total that adds fees (trash, pet, parking) on top of rent, and NOT market rent. A stated market/potential/scheduled rent total goes in totalMarketRent (when only one rent total is stated, decide from its column/label which of the two it is).
-9. extraColumns: every DATA column on unit rows that you did NOT map to a field in "columns" above. Give each one's header text (verbatim) and 0-based cell index. This MUST include any rent-regulation / lease-type / rent-status column (values such as "RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE"), any legal / registered / preferential rent column, and DHCR status codes. Deterministic code copies these cells verbatim; do NOT list columns already mapped in "columns", charge-code columns, or empty/decorative columns. [] when there are none.
+9. extraColumns: HEADER LABELS ONLY — this list no longer controls what is captured. Deterministic code copies every populated column verbatim whether or not you list it, so omitting one loses nothing. What it cannot always do is read a header that is merged, stacked over two rows, or abbreviated in a way only the surrounding context explains. So: for every DATA column on unit rows that you did NOT map in "columns", give its header text (verbatim) and 0-based cell index, and prioritize columns whose header cell is blank, merged, or stacked. Especially worth labelling: rent-regulation / lease-type / rent-status columns ("RS", "RC", "FM", "MK", "Stabilized", "Rent Controlled", "Decontrolled", "SCRIE"), legal / registered / preferential rent columns, and DHCR status codes. Never invent a label — if the sheet does not print one, leave the column out and code will fall back to its spreadsheet letter. [] when there are none.
 
 If unit rows in this sheet don't share one consistent column layout, or you are unsure the mapping is exact, answer layout="unsupported" — a slower full extraction will handle it. Correctness matters more than coverage.`;
 
@@ -381,14 +397,63 @@ export async function mapSheetStructure(
   return { structure: data, usage };
 }
 
-// Charge-column kind -> downstream charge category. 'fee' stays unmapped so
-// the keyword prior + per-document AI classifier decide (garage -> parking, …).
-const KIND_CATEGORY: Partial<Record<ChargeColumn['kind'], ChargeCategory>> = {
-  rent: 'base_rent',
+/**
+ * What a charge column DOES to the unit's rent. Derived from the mapper's
+ * `kind` plus the column's own sign — see `columnRole`.
+ *
+ *   rent_component     adds to rent (base/charged rent)
+ *   subsidy            adds to rent AND is reported separately (a third party
+ *                      paying part of the rent — the owner receives the cash)
+ *   owner_reduction    SUBTRACTS from rent (the owner collects less)
+ *   reimbursed_credit  does NOT touch rent (a third party makes the owner
+ *                      whole, so collectible rent is unchanged)
+ *   fee                ancillary income, never rent
+ */
+type ColumnRole = 'rent_component' | 'subsidy' | 'owner_reduction' | 'reimbursed_credit' | 'fee';
+
+const ROLE_CATEGORY: Partial<Record<ColumnRole, ChargeCategory>> = {
+  rent_component: 'base_rent',
   subsidy: 'subsidy',
-  employee_discount: 'concession',
-  concession: 'concession',
+  owner_reduction: 'concession',
+  reimbursed_credit: 'reimbursed_credit',
+  // 'fee' stays unmapped so the keyword prior + per-document AI classifier
+  // decide (garage -> parking, …).
 };
+
+/**
+ * A "subsidy" column whose amounts run NEGATIVE is not a subsidy.
+ *
+ * Section 8/HAP columns are positive — a third party paying rent INTO the unit.
+ * A negative column under the same heading is the opposite shape: a credit that
+ * lowers what the tenant is billed (SCRIE/DRIE and equivalents). Both leave the
+ * owner whole, but only the positive one is rent the owner receives, so summing
+ * a negative one into rent reports rent net of a credit the owner was
+ * reimbursed for.
+ *
+ * The sign is read from the column's TOTAL, not per row: a column must have one
+ * role for the whole document, or the same header would land in different
+ * categories on different units.
+ */
+function columnRole(kind: ChargeColumn['kind'], columnSum: number, header: string): ColumnRole {
+  // A header the narrow named-program prior recognises (SCRIE/DRIE, an
+  // exemption or abatement credit) settles the question before `kind` is
+  // consulted. The mapper classifies a negative column by SHAPE — it sees a
+  // reduction and reasonably calls it a concession — but shape cannot reveal
+  // that a third party reimburses the owner. Without this, a real SCRIE column
+  // walked as an owner-borne concession and came out of rent.
+  //
+  // It has to happen HERE rather than in the later charge classifier because
+  // monthlyRent is summed during the walk: relabelling the charge lines
+  // afterwards corrects the category but leaves the rent figure already wrong.
+  if (normalizeChargeCode(header) === 'reimbursed_credit') return 'reimbursed_credit';
+  switch (kind) {
+    case 'rent': return 'rent_component';
+    case 'subsidy': return columnSum < 0 ? 'reimbursed_credit' : 'subsidy';
+    case 'employee_discount':
+    case 'concession': return 'owner_reduction';
+    case 'fee': return 'fee';
+  }
+}
 
 /** Walk the sheet deterministically using the structure. */
 export function applyStructure(
@@ -420,6 +485,24 @@ export function applyStructure(
   const subsidyCodes = new Set((s.block?.subsidyChargeCodes ?? []).map(c => c.toLowerCase().trim()));
   const discountCodes = new Set((s.block?.employeeDiscountChargeCodes ?? []).map(c => c.toLowerCase().trim()));
   const concessionCodes = new Set((s.block?.concessionChargeCodes ?? []).map(c => c.toLowerCase().trim()));
+  const reimbursedCodes = new Set((s.block?.reimbursedCreditChargeCodes ?? []).map(c => c.toLowerCase().trim()));
+  // A code the mapper listed as BOTH owner-borne and reimbursed is treated as
+  // owner-borne: subtracting it understates rent, which is the conservative
+  // error for a valuation. Claiming a reimbursement that is not there does not
+  // have a conservative direction.
+  for (const c of [...concessionCodes, ...discountCodes]) reimbursedCodes.delete(c);
+  // ...unless the code names an exemption program outright. The mapper sorts
+  // negative codes by shape and will call a SCRIE/DRIE line a concession; the
+  // narrow named-program prior is the more specific evidence, and it has to win
+  // here rather than in the later charge classifier because monthlyRent is
+  // summed during this walk. Mirrors columnRole() on the charge-column path.
+  for (const c of [...concessionCodes, ...discountCodes]) {
+    if (normalizeChargeCode(c) === 'reimbursed_credit') {
+      concessionCodes.delete(c);
+      discountCodes.delete(c);
+      reimbursedCodes.add(c);
+    }
+  }
 
   const units: ExtractedUnit[] = [];
   const cols: typeof s.columns = { ...s.columns };
@@ -450,30 +533,100 @@ export function applyStructure(
       : [];
   const chargeCols: ChargeColumn[] = mappedChargeCols.filter(cc => looksNumericColumn(cc.index));
   const demotedChargeCols = mappedChargeCols.filter(cc => !chargeCols.includes(cc));
+
+  // One role per charge column for the whole sheet, fixed before the walk so a
+  // column cannot change meaning between units. Needs the column's signed total,
+  // which is a second pass over the data rows — cheap next to the walk itself.
+  const columnRoles = new Map<number, ColumnRole>();
+  for (const cc of chargeCols) {
+    let sum = 0;
+    for (let rr = Math.max(range.s.r, s.dataStartRow - 1); rr <= range.e.r; rr++) {
+      const v = readNumber(cellValue(sheet, rr, cc.index));
+      if (v !== null) sum += v;
+    }
+    columnRoles.set(cc.index, columnRole(cc.kind, sum, cc.header));
+  }
   const chargeTotalCol = s.layout === 'row' ? toSheetCol(s.chargeTotalColumn ?? null) : null;
   // The per-row printed totals + grand total anchor only exists when both the
   // charge columns and the total column are mapped.
   const auditCharges = chargeCols.length > 0 && chargeTotalCol !== null;
 
-  // Columns to capture verbatim into sourceColumns: the mapper's extraColumns,
-  // minus any index already mapped to a first-class field (guard against the
-  // mapper double-listing a mapped column).
-  const usedIdx = new Set<number>();
-  for (const v of Object.values(cols)) if (v !== null) usedIdx.add(v);
-  for (const v of [chargeDescCol, chargeAmtCol, chargeTotalCol]) if (v !== null) usedIdx.add(v);
-  for (const cc of chargeCols) usedIdx.add(cc.index);
-  const extraCols = (s.extraColumns ?? [])
-    .filter(ec => ec && typeof ec.index === 'number' && ec.index >= 0 && ec.header)
-    .map(ec => ({ ...ec, index: ec.index + originCol }))
-    .filter(ec => !usedIdx.has(ec.index));
-  // Demoted charge columns (text-valued, so status/code columns the mapper
-  // misfiled — see looksNumericColumn) are preserved verbatim like any other
-  // unmapped column, unless the mapper also listed them in extraColumns.
-  for (const cc of demotedChargeCols) {
-    if (!usedIdx.has(cc.index) && !extraCols.some(ec => ec.index === cc.index)) {
-      extraCols.push({ header: cc.header, index: cc.index });
+  // ---------------------------------------------------------------------
+  // sourceColumns: capture is DETERMINISTIC and complete.
+  //
+  // This used to be the mapper's `extraColumns` list — an allow-list the model
+  // built. That made completeness depend on the model remembering to enumerate
+  // a column, and an omission left no trace: the values simply were not in the
+  // payload and no consumer could tell the difference between "this document
+  // has no such column" and "the mapper forgot it". A dropped column is
+  // unrecoverable — the whole point of the parse is that nobody has to reopen
+  // the source file — so it must not ride on model diligence.
+  //
+  // The rule is now inverted: EVERY populated column in the used range is
+  // captured, and the mapping decides only what gets PROMOTED to a first-class
+  // field, never what is allowed to exist. Promoted columns are captured too,
+  // because promotion loses the document's own header text — a "Legal Rent"
+  // column mapped to marketRent is retrievable as a number but no longer
+  // identifiable as legal rent, which is exactly the loss that motivated this.
+  // ---------------------------------------------------------------------
+  // Header text per column, best effort. Priority: the mapper's own header
+  // strings (it can read stacked/merged headers a single-row read cannot),
+  // then the header row's cell, then a positional label so a column with no
+  // findable header is still captured rather than dropped.
+  const mapperHeaders = new Map<number, string>();
+  for (const ec of s.extraColumns ?? []) {
+    if (ec && typeof ec.index === 'number' && ec.index >= 0 && ec.header) {
+      mapperHeaders.set(ec.index + originCol, String(ec.header).trim());
     }
   }
+  for (const cc of [...chargeCols, ...demotedChargeCols]) {
+    if (cc.header) mapperHeaders.set(cc.index, String(cc.header).trim());
+  }
+
+  const firstDataRow = Math.max(range.s.r, s.dataStartRow - 1);
+  // A mapper-supplied headerRow wins; otherwise take the populated row nearest
+  // above the first data row, which is where report exports put labels.
+  let headerRowIdx: number | null =
+    typeof s.headerRow === 'number' && s.headerRow > 0 && s.headerRow - 1 < firstDataRow
+      ? s.headerRow - 1
+      : null;
+  if (headerRowIdx === null) {
+    for (let rr = firstDataRow - 1; rr >= range.s.r; rr--) {
+      let filled = 0;
+      for (let c = range.s.c; c <= maxCol; c++) if (readString(cellValue(sheet, rr, c)) !== null) filled++;
+      if (filled >= 2) { headerRowIdx = rr; break; }
+    }
+  }
+
+  const colLabel = (c: number): string => XLSX.utils.encode_col(c);
+  const headerFor = (c: number): string => {
+    const fromMapper = mapperHeaders.get(c);
+    if (fromMapper) return fromMapper;
+    const fromRow = headerRowIdx !== null ? readString(cellValue(sheet, headerRowIdx, c)) : null;
+    if (fromRow) return fromRow.trim();
+    return `Column ${colLabel(c)}`;
+  };
+
+  // Skip columns with no data at all on any row at or below the first data row:
+  // spacer/decorative columns carry no information and would only bloat every
+  // unit's payload.
+  const capturedCols: { header: string; index: number }[] = [];
+  for (let c = range.s.c; c <= maxCol; c++) {
+    let populated = false;
+    for (let rr = firstDataRow; rr <= range.e.r; rr++) {
+      if (readString(cellValue(sheet, rr, c)) !== null) { populated = true; break; }
+    }
+    if (populated) capturedCols.push({ header: headerFor(c), index: c });
+  }
+  // Charge columns are already captured verbatim (code + amount) in charges[],
+  // and the unit id is the record key — re-emitting them would duplicate the
+  // charge lines on every unit for no gain. Everything else stays, including
+  // columns promoted to scalar fields.
+  const chargeIdx = new Set(chargeCols.map(cc => cc.index));
+  const extraCols = capturedCols.filter(
+    cc => !chargeIdx.has(cc.index) && cc.index !== cols.unitNumber &&
+          cc.index !== chargeDescCol && cc.index !== chargeAmtCol
+  );
 
   // A block-internal charge "Total"/"Charge Total:" line. Mapper samples
   // sometimes emit "total" as a stopMarker (the prompt even suggests "totals"
@@ -601,8 +754,9 @@ export function applyStructure(
         for (const cc of chargeCols) {
           const amt = readNumber(cellValue(sheet, r, cc.index));
           if (amt === null) continue;
+          const role = columnRoles.get(cc.index) ?? 'fee';
           if (amt !== 0) {
-            const category = KIND_CATEGORY[cc.kind];
+            const category = ROLE_CATEGORY[role];
             chargeLines.push({ code: cc.header.trim(), amount: amt, ...(category ? { category } : {}) });
           }
           // The grid fills every cell (a dash reads as numeric 0), so a zero in
@@ -610,17 +764,27 @@ export function applyStructure(
           // amounts latch those fields, mirroring the block walker where the
           // flag fires only when the charge row exists. Rent keeps latching on
           // zero: an explicit $0 rent (super/employee unit) is a real value.
-          switch (cc.kind) {
-            case 'rent': sums.rent += amt; saw.rent = true; break;
+          switch (role) {
+            case 'rent_component': sums.rent += amt; saw.rent = true; break;
             case 'subsidy':
               sums.rent += amt; saw.rent = true;
               if (amt !== 0) { sums.subsidy += amt; saw.subsidy = true; }
               break;
-            case 'employee_discount':
-              if (amt !== 0) { sums.discount += amt; saw.discount = true; }
+            // Owner-borne: the owner collects less, so it comes OUT of rent.
+            // (`amt` is already negative — adding it subtracts.) It is also
+            // reported separately so a consumer can add it back.
+            case 'owner_reduction':
+              if (amt !== 0) {
+                sums.rent += amt; saw.rent = true;
+                if (cc.kind === 'employee_discount') { sums.discount += amt; saw.discount = true; }
+                else { sums.concession += amt; saw.concession = true; }
+              }
               break;
-            case 'concession':
-              if (amt !== 0) { sums.concession += amt; saw.concession = true; }
+            // Reimbursed: deliberately absent from every rent sum. The owner is
+            // made whole from outside the rent stream, so collectible rent is
+            // unchanged; the line stays in charges[] for consumers who want to
+            // reconstruct the tenant-paid figure instead.
+            case 'reimbursed_credit':
               break;
           }
         }
@@ -654,7 +818,20 @@ export function applyStructure(
       // rent), while discounts/concessions are separate adjustments.
       const sums = { rent: 0, subsidy: 0, discount: 0, concession: 0 };
       const saw = { rent: false, subsidy: false, discount: false, concession: false };
-      const chargeLines: { code: string; amount: number }[] = [];
+      const chargeLines: { code: string; amount: number; category?: ChargeCategory }[] = [];
+      // The mapper's per-document code lists are sheet-derived evidence about
+      // the rent-deciding categories. Stamping them on the charge lines keeps
+      // that knowledge attached instead of leaving a keyword table to re-guess
+      // it downstream from the code string alone. Fee/ancillary codes stay
+      // uncategorized here so the keyword prior and classifier still decide
+      // which flavour of income they are.
+      const blockCategory = (code: string): ChargeCategory | undefined => {
+        if (reimbursedCodes.has(code)) return 'reimbursed_credit';
+        if (concessionCodes.has(code) || discountCodes.has(code)) return 'concession';
+        if (subsidyCodes.has(code)) return 'subsidy';
+        if (rentCodes.has(code)) return 'base_rent';
+        return undefined;
+      };
       for (let cr = r; cr <= range.e.r; cr++) {
         if (cr > r) {
           if (isUnitRow(cr)) break;
@@ -667,15 +844,27 @@ export function applyStructure(
         if (CHARGE_TOTAL_LINE.test(desc.trim())) {
           if (blockChargeTotal === null) blockChargeTotal = amt;
         } else {
-          chargeLines.push({ code: desc.trim(), amount: amt });
+          const cat = blockCategory(desc.toLowerCase().trim());
+          chargeLines.push({ code: desc.trim(), amount: amt, ...(cat ? { category: cat } : {}) });
         }
-        // Bucketing is independent of the capture above so the rent math stays
-        // byte-identical to the pre-charges walker.
         const code = desc.toLowerCase().trim();
         if (rentCodes.has(code)) { sums.rent += amt; saw.rent = true; }
         if (subsidyCodes.has(code)) { sums.subsidy += amt; saw.subsidy = true; }
-        if (discountCodes.has(code)) { sums.discount += amt; saw.discount = true; }
-        if (concessionCodes.has(code)) { sums.concession += amt; saw.concession = true; }
+        // Owner-borne reductions come OUT of rent (`amt` is already negative),
+        // matching the charge-COLUMN walker. Before this they were reported
+        // separately but left in rent, so a block document carrying a
+        // preferential-rent discount reported rent GROSS of a reduction the
+        // owner really eats, while the same economics in a column layout came
+        // out net. Same document, opposite answer, decided only by layout.
+        if (discountCodes.has(code)) {
+          sums.discount += amt; saw.discount = true;
+          sums.rent += amt; saw.rent = true;
+        }
+        if (concessionCodes.has(code)) {
+          sums.concession += amt; saw.concession = true;
+          sums.rent += amt; saw.rent = true;
+        }
+        // Reimbursed credits touch no rent sum — see reimbursedCodes above.
       }
       if (chargeLines.length > 0) charges = chargeLines;
       monthlyRent = saw.rent ? cents(sums.rent) : null;

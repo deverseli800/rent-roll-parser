@@ -18,7 +18,23 @@ export const RENT_CLASS_CATEGORIES: ReadonlySet<ChargeCategory> = new Set<Charge
  * means ancillary income. So the summary rows do not all sum to that total.
  */
 export const RENT_ADJUSTMENT_CATEGORIES: ReadonlySet<ChargeCategory> = new Set<ChargeCategory>([
-  'concession', 'loss_to_lease', 'vacancy_loss',
+  'concession', 'reimbursed_credit', 'loss_to_lease', 'vacancy_loss',
+]);
+
+/**
+ * The categories that DECIDE MONEY: getting one of these wrong moves
+ * `monthlyRent`, which feeds a lender-facing value conclusion. They are held to
+ * a different standard than the rest — the AI classifier may correct them (see
+ * chargeClassifier.ts), and they are worth reconciling against the document's
+ * own printed totals.
+ *
+ * Everything NOT in this set is an ancillary-income flavour. Those distinctions
+ * (pet vs parking vs storage) change no number the engine produces; they exist
+ * so a consumer can aggregate across documents. A mistake there is a rollup
+ * annoyance, not a valuation error.
+ */
+export const RENT_DECIDING_CATEGORIES: ReadonlySet<ChargeCategory> = new Set<ChargeCategory>([
+  'base_rent', 'subsidy', 'concession', 'reimbursed_credit', 'loss_to_lease', 'vacancy_loss',
 ]);
 
 /** Every value the AI classifier is allowed to return (schema + validation). */
@@ -26,7 +42,7 @@ export const CHARGE_CATEGORIES: readonly ChargeCategory[] = [
   'base_rent', 'subsidy', 'pet', 'parking', 'storage', 'utility', 'trash',
   'pest_control', 'internet', 'admin_fee', 'deposit_waiver', 'credit_builder',
   'mtm_fee', 'damages', 'tax_recovery', 'other_income', 'concession',
-  'loss_to_lease', 'vacancy_loss', 'other',
+  'reimbursed_credit', 'loss_to_lease', 'vacancy_loss', 'other',
 ] as const;
 
 /**
@@ -149,9 +165,26 @@ export function normalizeChargeCode(rawCode: string): ChargeCategory {
   // from the concession list below — is the targeted fix.
   if (has('insurance', 'liability', 'pdlw')) return 'other_income';
 
+  // Reimbursed credits BEFORE concessions: a rent-exemption credit reads as a
+  // discount to the tenant, so the concession test below would claim every one
+  // of them. The distinction is who absorbs the reduction — here a third party
+  // does, so the owner's collectible rent is unchanged. "abatement" moved off
+  // the concession list for exactly this reason: an exemption credit IS a tax
+  // abatement, and calling it a concession asserts the owner ate a cost the
+  // city actually reimbursed.
+  //
+  // Deliberately NARROW. Only named programs and unambiguous "reimbursed by a
+  // third party" wording land here; anything vaguer is left to the per-document
+  // classifier, which can see the sign, magnitude and neighbouring codes. A
+  // false positive here silently RAISES rent, so the prior must be conservative.
+  if (has('scrie', 'drie', 'senior citizen rent increase', 'disability rent increase',
+          'rent increase exemption', 'tax abatement', 'abatement credit', 'j-51', 'j51')) {
+    return 'reimbursed_credit';
+  }
+
   // Concessions last. "waive"/"waiver" deliberately absent (see above);
   // "credit" is claimed earlier when it means credit reporting.
-  if (has('concession', 'discount', 'credit', 'free', 'courtesy', 'abatement')) {
+  if (has('concession', 'discount', 'credit', 'free', 'courtesy', 'preferential')) {
     return 'concession';
   }
 
