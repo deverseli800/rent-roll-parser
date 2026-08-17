@@ -317,7 +317,21 @@ function classifyCategory(
   if (/\b(parking|garage|carport|antenna|cell\s*tower|rooftop|laundry|storage|locker|billboard|signage|sign)\b/.test(s)) {
     return { category: 'non_unit_income', includeInUnitCount: false };
   }
-  if (/\b(store|retail|office|comm|commercial|restaurant|medical|professional)\b/.test(s) || /^c\d|^cm\b|^comm/i.test(unitNumber)) {
+  // Deliberately NOT keyed on a bare "C" + digit unit number. "C1/C2" is a
+  // commercial-numbering convention on some rolls, but plenty of properties
+  // letter their apartment LINES A/B/C/D, so the same pattern means the
+  // opposite thing more often than not. Measured on the corpus — counting only
+  // files that reach this function, i.e. Excel sheets the fast path actually
+  // claims — a `^C\d` test scored 16 false commercial labels (1bd/1ba
+  // floorplan code, ~750 sqft, ~$1.3-1.5K rents) against 3 true ones, so
+  // dropping it is +13 net. unitType does not separate the two cases either:
+  // the true positives carry no unitType at all.
+  // The error directions also cost differently. A missing commercial label is
+  // recoverable — a consumer with better information (public record) promotes
+  // the row. A false one has already corrupted the residential unit count,
+  // which consumers read before they get a chance to correct labels. So
+  // default to residential unless the document says otherwise.
+  if (/\b(store|retail|office|comm|commercial|restaurant|medical|professional)\b/.test(s) || /^cm\b|^comm/i.test(unitNumber)) {
     return { category: 'commercial', includeInUnitCount: true };
   }
   return { category: 'residential', includeInUnitCount: true };

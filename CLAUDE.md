@@ -159,3 +159,11 @@ cross-document aggregation. Spend verification effort accordingly.
   may correct `concession` <-> `reimbursed_credit`, but may not overrule the
   prior otherwise (`gateProposal` in `utils/chargeClassifier.ts` — the rationale
   and the measurements behind it are in that file)
+- Unit `category` gets a gated AI review inside `parseRentRoll` itself, so BOTH
+  paths (and the CLI/skill bundle, and the eval) get the same second look
+  (`utils/categoryClassifier.ts`). It reviews only ambiguous row SHAPES — rows
+  labelled commercial, and rows with no bed/bath value in a document whose
+  dwellings have one — so a clean roll costs no extra call. The model must name
+  document grounds; `tenant_or_rent_inference` and `unsure` are refused by the
+  gate, and an answer whose grounds contradict its own conclusion is discarded
+  and re-asked. Do not add tenant-name or rent-magnitude rules here.
