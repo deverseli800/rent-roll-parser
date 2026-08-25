@@ -118,9 +118,34 @@ function excelSerialToISO(serial: number): string | null {
   return d.toISOString().slice(0, 10);
 }
 
+// --- Sheet-name signals -----------------------------------------------------
+// Workbook tab names in acquisition/underwriting models are authored
+// deliberately and are a far stronger signal than the rent-ish keywords that
+// bleed into every financial tab's header rows. A tab literally named
+// "RR"/"Rent Roll" IS the rent roll; tabs named for financial statements or
+// boilerplate are NOT — however much rent language they carry (a "Setup"
+// workbook's Project Overview / T12 Financials / Trailing P&L / Disclaimer tabs
+// all mention rents and units, and without this the heuristic AND the AI triage
+// wave every one of them through, then the ladder burns all three models on
+// each empty sheet before ever reaching the real "RR" tab).
+const RENT_ROLL_NAME =
+  /(^|[^a-z])(rr|rent\s*roll|rentroll|rent[_-]?roll|tenant\s*(list|roster)|rent\s*schedule|stacking\s*plan|current\s*roll)([^a-z]|$)/i;
+const NON_RENT_ROLL_NAME =
+  /(disclaimer|overview|financ|profit|\bp\s*&?\s*l\b|p&l|\bt-?\s*12\b|trailing|pro\s*-?\s*forma|proforma|assumption|instruction|table\s*of\s*contents|\btoc\b|budget|cash\s*flow|cashflow|\bnoi\b|debt\s*service|sources\s*&?\s*uses|waterfall|sensitivity|\birr\b|\bcomps?\b|market\s*(study|survey|data)|photos?|\bmap\b|cover\s*(page|sheet))/i;
+
+/** A tab whose NAME unmistakably marks it as not a unit-level rent roll. The
+ * rent-roll name test wins ties, so "Rent Roll Summary" stays a rent roll. */
+function isObviouslyNotRentRoll(name: string): boolean {
+  return NON_RENT_ROLL_NAME.test(name) && !RENT_ROLL_NAME.test(name);
+}
+
 /** Heuristic: does this sheet plausibly contain a unit-level rent table? */
 function sheetHeuristicScore(info: SheetInfo): number {
   if (info.rows < 3) return 0;
+  // Name signals dominate content keywords (see above): a rent-roll-named tab is
+  // in regardless of content; a financial/boilerplate-named tab is out.
+  if (RENT_ROLL_NAME.test(info.name)) return 100;
+  if (isObviouslyNotRentRoll(info.name)) return -100;
   const t = info.preview.toLowerCase();
   let score = 0;
   for (const kw of ['unit', 'apt', 'apartment', 'tenant', 'resident', 'lessee']) {
@@ -254,7 +279,8 @@ async function harvestSummaryStated(
 async function extractSheet(
   info: SheetInfo,
   report?: ProgressReporter,
-  external?: PreviewData | null
+  external?: PreviewData | null,
+  acceptEmpty = false
 ): Promise<{ result: ExtractionResult; usage: AIUsage[]; path: 'fast' | 'ai' }> {
   const usages: AIUsage[] = [];
 
@@ -329,7 +355,7 @@ async function extractSheet(
   // anchors: the full extraction re-reads this sheet's own text itself, but it
   // can never see the summary sheets. (external is null when none exist, so
   // behavior is unchanged for ordinary workbooks.)
-  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`, chunking, external);
+  const result = await runExtractionLadder(makeContent, usages, report, `sheet "${info.name}"`, chunking, external, { acceptEmpty });
   return { result, usage: usages, path: 'ai' };
 }
 
@@ -394,6 +420,22 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
     });
   }
 
+  // Deterministic safety net over triage: the AI triage (or its
+  // extract-all-candidates fallback when the triage call fails) can still mark
+  // financial-statement or boilerplate tabs as rent rolls — their header rows
+  // carry rent language. Drop any selected tab whose NAME unmistakably marks it
+  // as not a rent roll, but never empty the selection (if every pick has such a
+  // name, trust triage rather than extract nothing).
+  const nameKept = selectedNames.filter(n => !isObviouslyNotRentRoll(n));
+  if (nameKept.length > 0 && nameKept.length < selectedNames.length) {
+    const dropped = selectedNames.filter(n => !nameKept.includes(n));
+    report?.('triaging', undefined, {
+      kind: 'decision',
+      message: `Skipping ${dropped.map(n => `"${n}"`).join(', ')} — the sheet name marks ${dropped.length === 1 ? 'it' : 'them'} as a financial/summary/boilerplate tab, not a unit-level rent roll`,
+    });
+    selectedNames = nameKept;
+  }
+
   const selected = infos.filter(i => selectedNames.includes(i.name));
 
   // Details+Summary exports put the unit count/occupancy on summary sheets
@@ -413,7 +455,12 @@ export async function parseExcelV2(buffer: Buffer, report?: ProgressReporter): P
   const results: ExtractionResult[] = [];
   const paths: string[] = [];
   for (const sheetInfo of selected) {
-    const { result, usage, path } = await extractSheet(sheetInfo, report, harvested);
+    // acceptEmpty when more than one sheet is in play: a sheet the fast model
+    // cleanly reads as having zero unit rows is a non-detail tab, and the units
+    // live on a sibling sheet — so accept the empty read instead of escalating
+    // the whole model ladder on it. (Single-sheet extractions keep escalating a
+    // 0-unit result, where it means a genuine miss worth a stronger model.)
+    const { result, usage, path } = await extractSheet(sheetInfo, report, harvested, selected.length > 1);
     allUsage.push(...usage);
     results.push(result);
     paths.push(`${sheetInfo.name}:${path}`);

@@ -62,6 +62,7 @@ import { calculateSummaryStats, nonTenantRentFromUnits } from '@/lib/utils/summa
 import { aggregateCharges, RENT_ADJUSTMENT_CATEGORIES } from '@/lib/utils/chargeNormalization';
 import { normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileTotalRent, reconcileVacantCount } from '@/lib/utils/occupancy';
 import { modelLabel } from '@/lib/utils/modelLabels';
+import { deriveBedBath, isBedBathHeader } from '@/lib/utils/bedBath';
 import { formatUSD } from '@/lib/utils/aiCost';
 import * as XLSX from 'xlsx';
 
@@ -1360,25 +1361,55 @@ export default function ExtractionPage() {
   const handleExportExcel = () => {
     if (!extraction) return;
 
+    // Union of the verbatim passthrough headers across all units, in first-seen
+    // order. These carry every captured column NOT promoted to a mapped field
+    // (bedroom/bathroom counts, rent-regulation codes, annual rent, etc.); the
+    // export must not drop them or it re-creates the exact data loss the capture
+    // contract exists to prevent.
+    const sourceHeaders: string[] = [];
+    const seenHeaders = new Set<string>();
+    for (const unit of units) {
+      for (const sc of unit.sourceColumns ?? []) {
+        const key = sc.header.toLowerCase().trim();
+        // Bed/bath counts export as the dedicated Bedrooms/Bathrooms columns.
+        if (key && !seenHeaders.has(key) && !isBedBathHeader(sc.header)) {
+          seenHeaders.add(key);
+          sourceHeaders.push(sc.header.trim());
+        }
+      }
+    }
+
     // Prepare data for Excel export
-    const exportData = units.map(unit => ({
-      'Unit #': unit.unitNumber,
-      'Building': unit.building || '',
-      'Status': unit.status,
-      'Type': unit.unitType || '',
-      'Sqft': unit.unitSqft || '',
-      'Monthly Rent': unit.monthlyRent || '',
-      'Market Rent': unit.marketRent ?? '',
-      'Subsidy': unit.subsidyRent ?? '',
-      'Employee Discount': unit.employeeDiscount ?? '',
-      'Concession': unit.concession ?? '',
-      'Tenant': unit.tenantName || '',
-      'Lease Start': unit.leaseStartDate || '',
-      'Lease End': unit.leaseEndDate || '',
-      'Move In': unit.moveInDate || '',
-      'Move Out': unit.moveOutDate || '',
-      'Lease Status': unit.leaseStatus || '',
-    }));
+    const exportData = units.map(unit => {
+      const row: Record<string, string | number> = {
+        'Unit #': unit.unitNumber,
+        'Building': unit.building || '',
+        'Status': unit.status,
+        'Type': unit.unitType || '',
+        'Bedrooms': unit.bedrooms ?? deriveBedBath(unit.sourceColumns, unit.unitType).bedrooms ?? '',
+        'Bathrooms': unit.bathrooms ?? deriveBedBath(unit.sourceColumns, unit.unitType).bathrooms ?? '',
+        'Sqft': unit.unitSqft || '',
+        'Monthly Rent': unit.monthlyRent || '',
+        'Market Rent': unit.marketRent ?? '',
+        'Subsidy': unit.subsidyRent ?? '',
+        'Employee Discount': unit.employeeDiscount ?? '',
+        'Concession': unit.concession ?? '',
+        'Tenant': unit.tenantName || '',
+        'Lease Start': unit.leaseStartDate || '',
+        'Lease End': unit.leaseEndDate || '',
+        'Move In': unit.moveInDate || '',
+        'Move Out': unit.moveOutDate || '',
+        'Lease Status': unit.leaseStatus || '',
+      };
+      for (const header of sourceHeaders) {
+        if (header in row) continue; // don't clobber a mapped column
+        const match = unit.sourceColumns?.find(
+          sc => sc.header.toLowerCase().trim() === header.toLowerCase().trim()
+        );
+        row[header] = match?.value ?? '';
+      }
+      return row;
+    });
 
     // Create workbook and worksheet
     const wb = XLSX.utils.book_new();
@@ -1412,6 +1443,12 @@ export default function ExtractionPage() {
     for (const field of optionalFields) {
       hasData[field] = units.some(unit => unit[field] !== null && unit[field] !== undefined && unit[field] !== '');
     }
+
+    // bedrooms/bathrooms count the stored field OR a live derivation, so the
+    // columns show by default whether the record was parsed with the new fields
+    // or predates them (older records re-derive from their captured sourceColumns).
+    hasData['bedrooms'] = units.some(u => (u.bedrooms ?? deriveBedBath(u.sourceColumns, u.unitType).bedrooms) != null);
+    hasData['bathrooms'] = units.some(u => (u.bathrooms ?? deriveBedBath(u.sourceColumns, u.unitType).bathrooms) != null);
 
     return hasData;
   }, [units]);
@@ -1641,6 +1678,42 @@ export default function ExtractionPage() {
         valueFormatter: currencyFormatter,
       }));
 
+    // One column per distinct verbatim passthrough header captured in
+    // sourceColumns (bedroom/bathroom counts, rent-regulation codes, legal
+    // rents, annual rent, and any other column NOT promoted to a first-class
+    // field). The engine captures EVERY populated column by contract; without
+    // rendering them here "Show all columns" silently omits real captured data,
+    // forcing the user back to the source file — the one thing this tool exists
+    // to prevent. Grouped case-insensitively, ordered by how many units carry
+    // them. Read-only: they are a verbatim transcription of the source cell.
+    const sourceColStats = new Map<string, { display: string; unitCount: number }>();
+    for (const u of units) {
+      const perUnit = new Set<string>();
+      for (const sc of u.sourceColumns ?? []) {
+        const key = sc.header.toLowerCase().trim();
+        if (!key) continue;
+        // Bed/bath counts are now shown as the dedicated Beds/Baths columns —
+        // don't also surface them here as a redundant passthrough column.
+        if (isBedBathHeader(sc.header)) continue;
+        if (!sourceColStats.has(key)) sourceColStats.set(key, { display: sc.header.trim(), unitCount: 0 });
+        if (!perUnit.has(key)) {
+          sourceColStats.get(key)!.unitCount++;
+          perUnit.add(key);
+        }
+      }
+    }
+    const sourceColumnColumns: ColDef<GenericRentRollUnit>[] = [...sourceColStats.entries()]
+      .sort((a, b) => b[1].unitCount - a[1].unitCount || a[0].localeCompare(b[0]))
+      .map(([key, { display, unitCount }]) => ({
+        colId: `sourceCol:${key}`,
+        headerName: display,
+        headerTooltip: `Source column "${display}" (verbatim passthrough) — ${unitCount} unit${unitCount === 1 ? '' : 's'}`,
+        width: 130,
+        editable: false,
+        valueGetter: (params) =>
+          params.data?.sourceColumns?.find((sc) => sc.header.toLowerCase().trim() === key)?.value ?? null,
+      }));
+
     const allColumns: (ColDef<GenericRentRollUnit> & { field?: string })[] = [
       {
         field: 'unitNumber',
@@ -1681,6 +1754,34 @@ export default function ExtractionPage() {
         headerName: 'Type',
         width: 100,
         editable: true,
+      },
+      {
+        // Bedrooms — a first-class field. valueGetter falls back to a live
+        // derivation so records parsed before the field existed still show it.
+        field: 'bedrooms',
+        headerName: 'Beds',
+        width: 80,
+        editable: true,
+        type: 'numericColumn',
+        valueGetter: (params) =>
+          params.data?.bedrooms ?? deriveBedBath(params.data?.sourceColumns, params.data?.unitType).bedrooms,
+        valueParser: (params) => {
+          const val = Number(params.newValue);
+          return isNaN(val) ? null : val;
+        },
+      },
+      {
+        field: 'bathrooms',
+        headerName: 'Baths',
+        width: 80,
+        editable: true,
+        type: 'numericColumn',
+        valueGetter: (params) =>
+          params.data?.bathrooms ?? deriveBedBath(params.data?.sourceColumns, params.data?.unitType).bathrooms,
+        valueParser: (params) => {
+          const val = Number(params.newValue);
+          return isNaN(val) ? null : val;
+        },
       },
       {
         field: 'unitSqft',
@@ -1817,6 +1918,10 @@ export default function ExtractionPage() {
         width: 120,
         editable: true,
       },
+      // Verbatim passthrough columns (bed/bath counts, regulation codes, etc.)
+      // ride behind the "Show all columns" toggle only — like the per-charge-code
+      // columns, they have no `field`, so they pass the columns-with-data filter.
+      ...(showAllColumns ? sourceColumnColumns : []),
       {
         headerName: '',
         width: 70,

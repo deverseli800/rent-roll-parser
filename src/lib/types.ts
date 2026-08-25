@@ -104,6 +104,12 @@ export interface GenericRentRollUnit {
   // Additional fields (all optional)
   unitSqft: number | null;
   unitType: string | null;           // e.g., "1BR/1BA", "Studio", "2BR/2BA"
+  // Bedrooms/bathrooms, promoted to first-class fields (crucial for residential
+  // rolls). Derived deterministically from the captured bed/bath sourceColumns
+  // or parsed from unitType — see utils/bedBath.ts. Optional: records processed
+  // before these fields existed won't carry them (the UI re-derives on the fly).
+  bedrooms?: number | null;
+  bathrooms?: number | null;         // may be fractional (e.g. 1.5)
   leaseStatus: string | null;        // Raw lease status from source (e.g., "Occupied", "Vacant-Leased")
   moveInDate: string | null;         // ISO date string
   moveOutDate: string | null;        // ISO date string

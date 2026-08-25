@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { ChargeCategory, GenericRentRollUnit, UnitStatus, StatedSummaryStats, ProgressEvent } from '../types';
 import { extractStructured, MaxTokensError, MODELS, modelLabel, type AIUsage } from './aiClient';
 import { createCharge } from '../utils/chargeNormalization';
+import { deriveBedBath } from '../utils/bedBath';
 import { countByStatus, normalizeOccupancyRatePct, reconcileOccupiedCount, reconcileUnitCount } from '../utils/occupancy';
 
 /**
@@ -329,6 +330,10 @@ export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: numb
       .map(c => (c.category
         ? { code: c.code.trim(), amount: c.amount, category: c.category }
         : createCharge(c.code.trim(), c.amount)));
+    // Promote bedrooms/bathrooms to first-class fields deterministically from
+    // the captured bed/bath columns (or a combined unitType). Same chokepoint
+    // for every path, so the value is consistent for every unit.
+    const { bedrooms, bathrooms } = deriveBedBath(u.sourceColumns, u.unitType);
     return {
     unitNumber: String(u.unitNumber).trim(),
     building: cleanPlaceholder(u.building),
@@ -343,6 +348,8 @@ export function toGenericRentRollUnits(units: ExtractedUnit[], sourcePage?: numb
     tenantName: cleanPlaceholder(u.tenantName),
     unitSqft: u.unitSqft ?? null,
     unitType: cleanPlaceholder(u.unitType),
+    bedrooms,
+    bathrooms,
     leaseStatus: u.leaseStatus ?? null,
     moveInDate: u.moveInDate ?? null,
     moveOutDate: u.moveOutDate ?? null,
@@ -923,7 +930,8 @@ export async function runExtractionLadder(
   report?: ProgressReporter,
   subject?: string,
   chunking?: ChunkingOptions,
-  externalStated?: PreviewData | null
+  externalStated?: PreviewData | null,
+  opts?: { acceptEmpty?: boolean }
 ): Promise<ExtractionResult> {
   let lastError: Error | null = null;
   let attemptNo = 0;
@@ -1030,6 +1038,22 @@ export async function runExtractionLadder(
   };
 
   let best = await attempt(MODELS.fast);
+
+  // Multi-sheet workbooks: when the fast model cleanly reads a sheet as having
+  // no unit-level rows, that sheet is a summary/financials/boilerplate tab and
+  // the units live on a sibling sheet — a stronger model cannot conjure units
+  // that are not there, so skip the escalation ladder and accept the empty read.
+  // Gated by acceptEmpty (set only when other sheets are also being extracted);
+  // a single-document parse still escalates a 0-unit result, where it means a
+  // real miss. The lastError guard keeps a transient API failure that produced
+  // 0 units on the escalation path (it is surfaced/retried, not accepted).
+  if (opts?.acceptEmpty && best.result.units.length === 0 && lastError === null) {
+    report?.('extracting', undefined, {
+      kind: 'decision',
+      message: `${subject ? subject[0].toUpperCase() + subject.slice(1) : 'This sheet'} has no unit-level rows — not a rent roll, skipping the model ladder`,
+    });
+    return best.result;
+  }
 
   if (!best.verification.ok) {
     const feedback = best.verification.issues.map(i => `- ${i}`).join('\n');
