@@ -134,10 +134,12 @@ function checkNoDuplicates(units: GenericRentRollUnit[]): VerificationCheck {
   const seen = new Set<string>();
   const duplicates: string[] = [];
 
-  // Key on building + unit: multi-building documents legitimately repeat unit
-  // numbers across buildings ("1A" in both 122 and 124).
+  // Key on category + building + unit: documents legitimately repeat a unit
+  // number across buildings ("1A" in both 122 and 124) and across categories
+  // (a residential "1" and a commercial "1" are different units, printed in
+  // separate rent-roll sub-tables).
   for (const unit of units) {
-    const normalized = `${(unit.building ?? '').trim().toUpperCase()}|${unit.unitNumber.trim().toUpperCase()}`;
+    const normalized = `${(unit.category ?? '').trim().toUpperCase()}|${(unit.building ?? '').trim().toUpperCase()}|${unit.unitNumber.trim().toUpperCase()}`;
     if (seen.has(normalized)) {
       duplicates.push(unit.building ? `${unit.building} ${unit.unitNumber}` : unit.unitNumber);
     }

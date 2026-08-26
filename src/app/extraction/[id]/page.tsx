@@ -1435,6 +1435,19 @@ export default function ExtractionPage() {
     setUnits(prevUnits => prevUnits.filter((_, i) => i !== index));
   }, []);
 
+  // Grid row data with a synthetic positional id. AG Grid needs getRowId to be
+  // unique per row; unitNumber is NOT — a document can legitimately reuse a
+  // number across categories (residential "1" vs commercial "1") or, when a
+  // genuine duplicate exists, print it twice. Keying getRowId on unitNumber
+  // collapsed those into one node and silently hid rows. Every edit/delete
+  // handler here already works by array index, so a positional id matches the
+  // model and guarantees uniqueness. __rowId lives only on this grid copy, so
+  // it never leaks into the persisted/exported unit records.
+  const gridRowData = useMemo(
+    () => units.map((unit, index) => ({ ...unit, __rowId: index })),
+    [units],
+  );
+
   // Detect which optional columns have data
   const columnsWithData = useMemo(() => {
     const optionalFields = ['building', 'unitType', 'unitSqft', 'marketRent', 'subsidyRent', 'employeeDiscount', 'concession', 'totalCharges', 'tenantName', 'leaseStartDate', 'leaseEndDate', 'moveInDate', 'moveOutDate', 'leaseStatus'] as const;
@@ -1449,6 +1462,12 @@ export default function ExtractionPage() {
     // or predates them (older records re-derive from their captured sourceColumns).
     hasData['bedrooms'] = units.some(u => (u.bedrooms ?? deriveBedBath(u.sourceColumns, u.unitType).bedrooms) != null);
     hasData['bathrooms'] = units.some(u => (u.bathrooms ?? deriveBedBath(u.sourceColumns, u.unitType).bathrooms) != null);
+
+    // Category rides with the "only columns with data" convention, treating
+    // residential as the unremarkable default: the column appears by default
+    // only when the roll actually mixes in a commercial / non-unit-income row,
+    // which is exactly when it matters that a unit is NOT residential.
+    hasData['category'] = units.some(u => u.category && u.category !== 'residential');
 
     return hasData;
   }, [units]);
@@ -1745,6 +1764,35 @@ export default function ExtractionPage() {
             model: '#d0ebff',
             down: '#e9ecef',
             applicant: '#e5dbff',
+          };
+          return { backgroundColor: colors[params.value] || 'transparent' };
+        },
+      },
+      {
+        // Unit category (residential / commercial / non-unit income). Makes a
+        // commercial unit read as clearly NOT residential — a document can reuse
+        // the same unit number across categories (a residential "1" and a
+        // commercial "1"), so unitNumber alone doesn't tell them apart.
+        field: 'category',
+        headerName: 'Category',
+        width: 130,
+        editable: true,
+        cellEditor: 'agSelectCellEditor',
+        cellEditorParams: {
+          values: ['residential', 'commercial', 'non_unit_income'],
+        },
+        valueFormatter: (params) => {
+          const labels: Record<string, string> = {
+            residential: 'Residential',
+            commercial: 'Commercial',
+            non_unit_income: 'Non-unit income',
+          };
+          return params.value ? labels[params.value] ?? params.value : '';
+        },
+        cellStyle: (params) => {
+          const colors: Record<string, string> = {
+            commercial: '#ffe8cc',
+            non_unit_income: '#e9ecef',
           };
           return { backgroundColor: colors[params.value] || 'transparent' };
         },
@@ -2220,7 +2268,7 @@ export default function ExtractionPage() {
           <div style={{ height: 600, width: '100%' }}>
             <AgGridReact
               theme={themeQuartz}
-              rowData={units}
+              rowData={gridRowData}
               columnDefs={columnDefs}
               defaultColDef={defaultColDef}
               onCellValueChanged={onCellValueChanged}
@@ -2229,7 +2277,7 @@ export default function ExtractionPage() {
               suppressRowClickSelection={true}
               animateRows={false}
               enableCellTextSelection={true}
-              getRowId={(params) => String(params.data.unitNumber)}
+              getRowId={(params) => String((params.data as { __rowId: number }).__rowId)}
             />
           </div>
         </Paper>
