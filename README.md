@@ -29,11 +29,11 @@ Excel/PDF
    │                              └─ anything off ───────────────────┐
    │                                                                 │
    └─ PDF, scan, irregular layout, or fast path declined ────────────┴─► AI LADDER
-                                                                         Sonnet 5
+                                                                         Sonnet 5.5
                                                                             │ verification fails
-                                                                         Opus 4.8  (+ what mismatched)
+                                                                         Opus 5.5  (+ what mismatched)
                                                                             │ verification fails
-                                                                         Fable 5
+                                                                         Fable 5.1
 ```
 
 Fallback is silent and automatic — the fast path never guesses at being right. It is accepted only when both of these hold:
@@ -218,7 +218,7 @@ data/extractions/                # Extraction records (local JSON, gitignored)
 ## Tech stack
 
 - [Next.js 16](https://nextjs.org/) (App Router)
-- [Anthropic Claude API](https://www.anthropic.com/): Sonnet 5, Opus 4.8, and Fable 5 with structured outputs, streaming, and prompt caching
+- [Anthropic Claude API](https://www.anthropic.com/): Sonnet 5.5, Opus 5.5, and Fable 5.1 with structured outputs, streaming, and prompt caching
 - [Mantine v8](https://mantine.dev/) UI, [AG Grid](https://www.ag-grid.com/) review table
 - [SheetJS](https://sheetjs.com/) Excel parsing, [Zod](https://zod.dev/) validation
 

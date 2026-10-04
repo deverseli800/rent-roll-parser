@@ -38,7 +38,7 @@ npx tsx ./scripts/parse-rent-roll.ts <path-to-file> [--out <path>]
   (`run_in_background`) and monitor, rather than blocking on it. Progress
   streams to stderr, including "N units extracted so far" heartbeats — if
   those are advancing, it is not stuck. The model ladder
-  (Sonnet 5 → Opus 4.8 → Fable 5) may legitimately restart extraction on a
+  (Sonnet 5.5 → Opus 5.5 → Fable 5.1) may legitimately restart extraction on a
   bigger model when self-verification fails.
 - **Early summary — relay it immediately.** Within ~20 seconds, stderr prints a
   line starting with "Document summary —" giving the totals the document states

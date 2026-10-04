@@ -144,7 +144,7 @@ export interface ProgressEvent {
 // Live progress for an extraction being processed in the background
 export interface ExtractionProgress {
   stage: string;            // e.g. "extracting", "verifying", "validating"
-  detail: string | null;    // e.g. 'sheet "Report1" — attempt 2 (claude-opus-4-8), 41KB streamed'
+  detail: string | null;    // e.g. 'sheet "Report1" — attempt 2 (claude-opus-5-5), 41KB streamed'
   updatedAt: string;        // ISO timestamp of last heartbeat
   events?: ProgressEvent[]; // append-only timeline of notable moments
 }
@@ -329,7 +329,7 @@ export interface RentRollExtraction {
   pageCount: number | null;
 
   // AI usage tracking
-  modelUsed: string | null;           // e.g., 'claude-sonnet-4-20250514'
+  modelUsed: string | null;           // e.g., 'claude-sonnet-5-5'
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;

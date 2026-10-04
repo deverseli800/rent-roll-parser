@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats, UnitCharge } from '../types';
 import { ClaudeExtractionResponseSchema } from '../validation/schema';
 import { createCharge } from '../utils/chargeNormalization';
+import { MODELS } from './aiClient';
 
 /**
  * AI-Assisted Excel Parser
@@ -275,8 +276,8 @@ Respond with ONLY valid JSON matching this structure:
 }`;
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 1000,
+    model: MODELS.fast,
+    max_tokens: 16000, // adaptive thinking runs by default and shares this budget
     messages: [
       {
         role: 'user',
@@ -790,7 +791,7 @@ Return ONLY valid JSON in this exact format:
 
   // Use Opus for non-standard formats since these are the hardest to parse accurately
   const response = await client.messages.create({
-    model: 'claude-opus-4-5-20251101',
+    model: MODELS.strong,
     max_tokens: 16000,
     messages: [{ role: 'user', content: prompt }],
   });

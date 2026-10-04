@@ -729,11 +729,11 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
 
 /**
  * Run the full extraction ladder for one document/sheet:
- *   1. Sonnet 5.
- *   2. If verification fails: Opus 4.8 with feedback, keep the better attempt;
- *      if still failing and the doc states totals: Fable 5 with feedback.
+ *   1. Sonnet 5.5.
+ *   2. If verification fails: Opus 5.5 with feedback, keep the better attempt;
+ *      if still failing and the doc states totals: Fable 5.1 with feedback.
  *   3. If verification "passes" only because the document states no totals
- *      (nothing to check against): run Opus 4.8 as an independent second
+ *      (nothing to check against): run Opus 5.5 as an independent second
  *      opinion; keep the fast result only when both agree on the unit set.
  */
 /**

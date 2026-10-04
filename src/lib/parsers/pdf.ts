@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { GenericRentRollUnit, UnitStatus, StatedSummaryStats } from '../types';
 import { ClaudeExtractionResponseSchema } from '../validation/schema';
+import { MODELS } from './aiClient';
 
 /**
  * PDF Parser using Claude Vision API (legacy v1)
@@ -148,7 +149,7 @@ export async function parsePDF(buffer: Buffer): Promise<{
   try {
     const response = await client.messages.create(
       {
-        model: 'claude-sonnet-4-5-20250929',
+        model: MODELS.fast,
         max_tokens: 64000,
         messages: [
           {
@@ -251,11 +252,11 @@ export async function parsePDF(buffer: Buffer): Promise<{
       outputTokens: response.usage.output_tokens,
     };
   } catch (error) {
-    // If Claude Sonnet 4 fails, try with Opus 4.5
+    // If the fast model fails, retry on the strong model
     if (error instanceof Error && error.message.includes('model')) {
       const response = await client.messages.create(
         {
-          model: 'claude-opus-4-5-20251101',
+          model: MODELS.strong,
           max_tokens: 64000,
           messages: [
             {

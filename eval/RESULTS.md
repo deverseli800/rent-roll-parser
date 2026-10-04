@@ -102,12 +102,13 @@ Macro = mean of file accuracies (the target metric).
 
 - **Structured outputs** (`output_config.format` json_schema) — guaranteed-valid
   JSON, no regex parsing, no Zod crashes (v1 crashed on 12/46 files).
-- **Model ladder with self-verification**: Sonnet 5 first; extraction is checked
+- **Model ladder with self-verification**: Sonnet 5.5 first; extraction is checked
   against totals stated in the document itself (unit count, rent sum, occupied
-  count). On failure it retries with Opus 4.8 (then Fable 5) with explicit
+  count). On failure it retries with Opus 5.5 (then Fable 5.1) with explicit
   feedback about what mismatched, keeping the better attempt. When a document
-  states no totals at all, Opus 4.8 runs as a second opinion and wins on
-  disagreement.
+  states no totals at all, Opus 5.5 runs as a second opinion and wins on
+  disagreement. (The runs recorded in this file predate the move to this
+  ladder; re-run the eval before quoting them against it.)
 - **All sheets, not just the first**: heuristic + AI triage picks unit-level
   sheets in multi-building workbooks; per-sheet extraction; stated totals summed
   across sheets; change-log sheets dropped only when both unit numbers AND

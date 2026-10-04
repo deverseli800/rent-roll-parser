@@ -6,15 +6,17 @@ import Anthropic from '@anthropic-ai/sdk';
  * - Structured outputs (output_config.format json_schema) so responses are
  *   guaranteed-valid JSON — no regex extraction.
  * - Streaming (required for large max_tokens).
- * - Model ladder: Sonnet 5 (fast/cheap) -> Opus 4.8 (strong) -> Fable 5
+ * - Model ladder: Sonnet 5.5 (fast/cheap) -> Opus 5.5 (strong) -> Fable 5.1
  *   (most capable) for escalation when verification fails.
  */
 
 export const MODELS = {
-  fast: 'claude-sonnet-5',
-  strong: 'claude-opus-4-8',
-  max: 'claude-fable-5',
+  fast: 'claude-sonnet-5-5',
+  strong: 'claude-opus-5-5',
+  max: 'claude-fable-5-1',
 } as const;
+
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Human-readable names for progress/escalation messages. */
 export { modelLabel } from '../utils/modelLabels';
@@ -77,27 +79,33 @@ export async function extractStructured<T>(options: {
    * for progress reporting (e.g. '"unitNumber"' — once per unit object).
    */
   itemToken?: string;
+  /**
+   * Defaults to 'high' on every rung. Set explicitly because the per-model
+   * defaults differ (Opus 5.5 defaults to 'medium'), and an implicit default
+   * would silently change how hard an escalation rung thinks.
+   */
+  effort?: Effort;
 }): Promise<{ data: T; usage: AIUsage }> {
   const client = getClient();
   // 128000 is the output ceiling for every model in the ladder.
-  const { model, content, schema, maxTokens = 128000, onHeartbeat, itemToken } = options;
+  const { model, content, schema, maxTokens = 128000, onHeartbeat, itemToken, effort = 'high' } = options;
 
   const params: Anthropic.MessageCreateParamsStreaming = {
     model,
     max_tokens: maxTokens,
     stream: true,
     messages: [{ role: 'user', content }],
+    // Every model in the ladder accepts adaptive thinking (and none accepts
+    // disabling it), so one setting covers all rungs.
+    thinking: { type: 'adaptive' },
     output_config: {
+      effort,
       format: {
         type: 'json_schema',
         schema,
       },
     },
   };
-  // Fable 5: thinking is always on (omit param). Opus/Sonnet: enable adaptive.
-  if (model !== MODELS.max) {
-    params.thinking = { type: 'adaptive' };
-  }
 
   const stream = client.messages.stream(params);
 
@@ -137,7 +145,8 @@ export async function extractStructured<T>(options: {
   const message = await stream.finalMessage();
 
   if (message.stop_reason === 'refusal') {
-    throw new Error(`Model ${model} refused the request`);
+    const category = message.stop_details?.category;
+    throw new Error(`Model ${model} refused the request${category ? ` (category: ${category})` : ''}`);
   }
   if (message.stop_reason === 'max_tokens') {
     throw new MaxTokensError(model, maxTokens);

@@ -3,10 +3,11 @@
  * can never drift from the model actually used (no hardcoded map to go
  * stale when the ladder in parsers/aiClient.ts changes).
  *
- *   claude-sonnet-5            -> Sonnet 5
- *   claude-opus-4-8            -> Opus 4.8
- *   claude-fable-5             -> Fable 5
- *   claude-sonnet-4-5-20250929 -> Sonnet 4.5   (date snapshot suffix dropped)
+ *   claude-sonnet-5-5 -> Sonnet 5.5
+ *   claude-opus-5-5   -> Opus 5.5
+ *   claude-fable-5-1  -> Fable 5.1
+ *
+ * A trailing -YYYYMMDD snapshot suffix, if an id carries one, is dropped.
  *
  * Client-safe: no SDK imports, usable from React components.
  */

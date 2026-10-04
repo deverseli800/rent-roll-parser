@@ -24,9 +24,9 @@ import { estimateCostUSD } from '../utils/aiCost';
  *    building plus summary/lookup sheets).
  * 2. Triage which sheets contain unit-level rent data (heuristic; AI for
  *    ambiguous multi-sheet workbooks).
- * 3. Full AI extraction per sheet with structured outputs (Sonnet 5).
+ * 3. Full AI extraction per sheet with structured outputs (Sonnet 5.5).
  * 4. Self-verify against totals stated in the sheet; escalate failed sheets to
- *    Opus 4.8 with feedback, keep the better attempt.
+ *    Opus 5.5 with feedback, keep the better attempt.
  */
 
 const MAX_COLS = 80; // hard ceiling; actual width adapts to populated columns

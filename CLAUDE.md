@@ -10,7 +10,7 @@ A Next.js web application that extracts structured data from multifamily real es
 - **Framework**: Next.js 16 (App Router)
 - **UI**: Mantine v8
 - **Data Grid**: AG Grid Community
-- **AI**: Anthropic Claude API (Sonnet 4 / Opus 4.5)
+- **AI**: Anthropic Claude API (Sonnet 5.5 / Opus 5.5 / Fable 5.1)
 - **Excel Parsing**: SheetJS (xlsx)
 - **Validation**: Zod
 - **Storage**: Local JSON files in `data/extractions/`
@@ -81,7 +81,7 @@ Target: macro-average field accuracy >= 95% (achieved: see eval/runs/).
 ## Parser Architecture (v2)
 - `src/lib/parsers/extractionCore.ts` — shared extraction rules/prompt, JSON schema,
   status normalization, self-verification against document-stated totals, and the
-  model escalation ladder (Sonnet 5 -> Opus 4.8 -> Fable 5; second-opinion consensus
+  model escalation ladder (Sonnet 5.5 -> Opus 5.5 -> Fable 5.1; second-opinion consensus
   when a document states no totals to verify against).
 - `src/lib/parsers/excelV2.ts` — all-sheet reading (cellNF/cellText for date formats),
   heuristic + AI sheet triage, per-sheet full-AI extraction with structured outputs,

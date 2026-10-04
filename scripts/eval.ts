@@ -8,6 +8,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
 import { parseRentRoll } from '../src/lib/parsers';
 import { validateExtraction } from '../src/lib/validation/validators';
 import { calculateSummaryStats } from '../src/lib/utils/summaryStats';
+import { modelLabel } from '../src/lib/utils/modelLabels';
 
 // Legacy v1 smoke-test harness. The maintained evaluation lives in eval/
 // (see eval/SPEC.md); this one just walks a local folder of documents.
@@ -66,9 +67,7 @@ async function runEval() {
       const matchesExpected = expectedCount !== null ? result.units.length === expectedCount : null;
 
       const totalTokens = result.inputTokens + result.outputTokens;
-      const modelShort = result.modelUsed.includes('opus') ? 'Opus 4.5' :
-                         result.modelUsed.includes('sonnet-4-5') ? 'Sonnet 4.5' :
-                         result.modelUsed.includes('sonnet') ? 'Sonnet 4' : result.modelUsed;
+      const modelShort = modelLabel(result.modelUsed);
 
       console.log(`  ✓ Extracted ${result.units.length} units`);
       console.log(`  ✓ Stated count in doc: ${result.statedUnitCount ?? 'N/A'}`);
