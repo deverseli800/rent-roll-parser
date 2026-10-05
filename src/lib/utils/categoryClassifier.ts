@@ -30,15 +30,20 @@ import type { GenericRentRollUnit } from '../types';
  *
  * WHAT IT MAY REASON FROM
  *
- * Document evidence only — the three ways real rolls actually mark commercial
- * space: an explicit use label ("Commercial", "Store", "Retail"), a unit id
- * that names it, or a bed/bath / unit-type field left non-applicable where the
- * document's dwellings all carry one. Tenant-entity names ("... LLC", "... Inc")
- * and rent magnitude are deliberately NOT grounds, even though both are often
- * the giveaway to a human: the engine has no public record to anchor a
- * name-based rule to, and an LLC tenant is a tiebreaker at best (a corporate
- * lessee of an apartment is ordinary). The model is asked to report its grounds
- * and `gateCategoryProposal` declines a proposal that rests on them.
+ * The rows themselves, verbatim — the candidate rows and a sample of the
+ * document's other rows, every captured column included — and the model's own
+ * judgment of them. It is NOT handed pre-digested conclusions or examples of
+ * what a placeholder looks like: recognising that a bed/bath cell carries no
+ * real count, by comparing it with the rows that do, is the judgment being
+ * asked for, and a prompt that names the pattern turns it into a lookup.
+ *
+ * A move needs a structural ground from the document: a use label, a unit id
+ * that spells out its use, or a space-describing field (bed/bath, unit type)
+ * that marks the row as unlike the document's dwellings. The tenant name may
+ * corroborate that ground — a business entity in a row whose bed/bath field is
+ * empty is two signals agreeing — but never stands alone, because a corporate
+ * lessee of an apartment is ordinary. Rent size is not a ground. The model
+ * reports its grounds and `gateCategoryProposal` enforces both rules.
  */
 
 export type UnitCategory = 'residential' | 'commercial' | 'non_unit_income';
@@ -55,8 +60,8 @@ const EVIDENCE_KINDS = [
   'no_bed_bath',               // bed/bath or unit-type left non-applicable where dwellings carry one
   'dwelling_markers',          // bed/bath count or floorplan code present -> it IS a dwelling
   'ancillary_label',           // parking/garage/laundry/storage/antenna/signage
-  'tenant_or_rent_inference',  // only the tenant name or the rent size suggests it -> DECLINED
-  'unsure',                    // no document evidence either way -> DECLINED
+  'tenant_name',               // the tenant is consistent with the use -> corroborates, never sufficient alone
+  'unsure',                    // the rows don't settle it -> keep the parser's label
 ] as const;
 
 type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
@@ -110,8 +115,6 @@ export interface CategoryCandidate {
 
 export interface CandidateReport {
   candidates: CategoryCandidate[];
-  /** Distinct unit-type values in this document that DO look like dwellings. */
-  dwellingVocab: string[];
   totalUnits: number;
 }
 
@@ -149,7 +152,6 @@ export function collectCategoryCandidates(units: GenericRentRollUnit[]): Candida
   });
   const total = rows.length;
   const typedUnits = rows.filter(r => !r.blank).length;
-  const dwellingVocab = [...new Set(rows.filter(r => !r.blank).map(r => r.typeText!))].slice(0, 12);
 
   const groups = new Map<string, CategoryCandidate & { blank: boolean }>();
   for (const r of rows) {
@@ -195,20 +197,17 @@ export function collectCategoryCandidates(units: GenericRentRollUnit[]): Candida
     // exactly 3 stores to 3 apartments, and "under half the document" excluded
     // the very rows it was written for.
     if (g.blank && contrastAvailable && typedUnits >= g.count) {
-      g.reason = `no ${g.typeHeader ?? 'unit type'} value, while ${typedUnits} of ${total} rows in this document have one`;
+      // Say why the shape was flagged, not what to conclude: the model judges
+      // the rows themselves, shown verbatim alongside the document's others.
+      g.reason = `the parser defaulted to residential; its ${g.typeHeader ?? 'unit type'} field differs from the document's other rows`;
       candidates.push(g);
     }
   }
-  return { candidates, dwellingVocab, totalUnits: total };
+  return { candidates, totalUnits: total };
 }
 
-/** Grounds that are never sufficient to move a label, whatever they are cited for. */
-const UNGROUNDED: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>([
-  'tenant_or_rent_inference', 'unsure',
-]);
-
 /**
- * Which grounds can support which conclusion.
+ * Grounds that can support a conclusion on their own, by conclusion.
  *
  * The asymmetry is the point, and it follows the same logic as the `^C\d`
  * deletion in excelFastPath.ts: calling something a dwelling is the safe
@@ -216,6 +215,8 @@ const UNGROUNDED: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>([
  * asserting commercial corrupts a count nobody re-derives. So concluding
  * residential requires positive dwelling markers, not merely the absence of a
  * commercial signal.
+ *
+ * `tenant_name` appears in no set: it may accompany a ground but never be one.
  */
 const SUPPORTS: Record<UnitCategory, ReadonlySet<EvidenceKind>> = {
   residential: new Set<EvidenceKind>(['dwelling_markers']),
@@ -223,9 +224,12 @@ const SUPPORTS: Record<UnitCategory, ReadonlySet<EvidenceKind>> = {
   non_unit_income: new Set<EvidenceKind>(['ancillary_label', 'explicit_use_label', 'unit_label']),
 };
 
+/** Grounds that may be cited alongside any conclusion without arguing against it. */
+const CORROBORATING: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>(['tenant_name']);
+
 /**
- * Whether an answer is internally consistent — the grounds actually argue for
- * the conclusion.
+ * Whether an answer is internally consistent — its grounds actually argue for
+ * its conclusion.
  *
  * This is a real observed failure, not a theoretical one: on the 6-unit sheet
  * that motivated this module, 1 of 8 review calls came back
@@ -235,12 +239,16 @@ const SUPPORTS: Record<UnitCategory, ReadonlySet<EvidenceKind>> = {
  * happened to match the parser's existing label and so read as agreement.
  * Treating it as unusable (and letting the retry ask again) is what makes the
  * review stable; scoring it as a vote would have silently kept a wrong label.
+ *
+ * Coherent means: "unsure" alone (the model is told to return the parser's
+ * label then), or at least one ground that supports the conclusion and none
+ * that supports a different one. Corroboration is neutral.
  */
-export function isCoherentAnswer(category: UnitCategory, evidence: EvidenceKind): boolean {
-  // "I have no usable grounds" is a coherent answer whatever label accompanies
-  // it — the model is told to return the parser's existing label in that case.
-  if (UNGROUNDED.has(evidence)) return true;
-  return SUPPORTS[category].has(evidence);
+export function isCoherentAnswer(category: UnitCategory, evidence: readonly EvidenceKind[]): boolean {
+  if (evidence.length === 0) return false;
+  if (evidence.every(e => e === 'unsure')) return true;
+  const grounds = evidence.filter(e => e !== 'unsure' && !CORROBORATING.has(e));
+  return grounds.length > 0 && grounds.every(e => SUPPORTS[category].has(e));
 }
 
 /**
@@ -250,19 +258,18 @@ export function isCoherentAnswer(category: UnitCategory, evidence: EvidenceKind)
  *   decline — keep the parser's, record the disagreement
  *   noop    — they agree
  *
- * Every accepted proposal must name document grounds that support it.
- * `tenant_or_rent_inference` and `unsure` are refused outright — that is where
- * the no-name-inference rule is enforced, rather than trusting the prompt to
- * have been obeyed.
+ * Every accepted proposal must name a structural ground that supports it. A
+ * proposal resting on the tenant name alone, or on nothing, is declined — that
+ * is where the rule is enforced, rather than trusting the prompt to have been
+ * obeyed.
  */
 export function gateCategoryProposal(
   from: UnitCategory,
   to: UnitCategory,
-  evidence: EvidenceKind
+  evidence: readonly EvidenceKind[]
 ): 'accept' | 'decline' | 'noop' {
   if (from === to) return 'noop';
-  if (UNGROUNDED.has(evidence)) return 'decline';
-  return SUPPORTS[to].has(evidence) ? 'accept' : 'decline';
+  return evidence.some(e => SUPPORTS[to].has(e)) ? 'accept' : 'decline';
 }
 
 const REVIEW_SCHEMA: Record<string, unknown> = {
@@ -279,38 +286,69 @@ const REVIEW_SCHEMA: Record<string, unknown> = {
         required: ['key', 'category', 'evidence'],
         properties: {
           key: { type: 'string', description: 'The shape key, copied verbatim from the input list' },
-          category: { type: 'string', description: `Exactly one of: ${CATEGORIES.join(', ')}` },
-          evidence: { type: 'string', description: `Exactly one of: ${EVIDENCE_KINDS.join(', ')}` },
+          category: { type: 'string', enum: [...CATEGORIES] },
+          evidence: {
+            type: 'array',
+            description: 'Every ground you relied on',
+            items: { type: 'string', enum: [...EVIDENCE_KINDS] },
+          },
         },
       },
     },
   },
 };
 
-const PROMPT = `You are reviewing what certain rows of ONE multifamily rent roll ARE, so downstream code counts dwellings correctly. A deterministic parser already labelled every row; below are only the row shapes whose label is worth a second look, grouped so that identical rows appear once.
+const PROMPT = `You are reviewing what certain rows of ONE multifamily rent roll ARE, so downstream code counts dwellings correctly. A deterministic parser already labelled every row. Below are the row shapes whose label is worth a second look, each with its rows exactly as the document prints them, followed by a sample of the document's other rows for comparison.
 
 Assign each shape exactly one category:
-  residential      a dwelling: apartment, condo, house, including superintendent/employee units and rent-regulated apartments. A rent-stabilized apartment is still residential — this is factual, not a legal status.
+  residential      a dwelling: apartment, condo, house, including superintendent/employee units and rent-regulated apartments.
   commercial       non-dwelling leasable space: store, retail, office, professional, restaurant, medical.
   non_unit_income  an ancillary income line that is neither: parking space/garage, antenna/cell tower, laundry, storage rented as income, signage/billboard.
 
-And report the grounds you used, exactly one of:
-  explicit_use_label       a use/type column or value says commercial, store, retail, office, etc.
-  unit_label               the unit id itself names it (e.g. "STORE", "RETAIL-1", "COMM2")
-  no_bed_bath              its bed/bath or unit-type field is blank or marked non-applicable (e.g. "--/--") while this document's dwellings all carry a value there
-  dwelling_markers         it has a bedroom/bathroom count or a floorplan code, so it is a dwelling
-  ancillary_label          it names parking, a garage, laundry, storage, an antenna or signage
-  tenant_or_rent_inference the ONLY thing suggesting your answer is the tenant's name (e.g. an LLC or Inc) or how large the rent is
-  unsure                   the document gives you no evidence either way
+Report every ground you relied on:
+  explicit_use_label  a use/type column or value states the use
+  unit_label          the unit id itself spells out the use
+  no_bed_bath         the row's bed/bath or unit-type field carries no real dwelling description, where the document's dwellings do carry one
+  dwelling_markers    the row has a real bedroom/bathroom count or floorplan, so it is a dwelling
+  ancillary_label     the row names parking, a garage, laundry, storage, an antenna or signage
+  tenant_name         the tenant is consistent with your answer (supporting only)
+  unsure              the rows don't settle it
 
-Rules:
-- Judge from the document's own labels and columns. A corporate-sounding tenant name and an unusually large rent are NOT sufficient grounds — if that is all you have, answer with the parser's existing label and report tenant_or_rent_inference. This is enforced downstream, so guessing past it changes nothing.
-- A blank bed/bath field is strong evidence ONLY where this document's dwellings do carry one; the contrast is given to you below.
-- A zero-bedroom value like "0/1" is a STUDIO — a dwelling. Non-applicable placeholders like "--/--" are not the same thing.
-- A lettered unit id ("C1", "B2") means nothing on its own: many properties letter their apartment lines. Do not treat the letter as evidence.
-- When the evidence is genuinely balanced, keep the parser's label and say unsure. Defaulting to residential is recoverable; asserting commercial is not.
+Judge from how the document describes the space, comparing each shape with the document's other rows. The tenant can support what those columns show, but it cannot decide on its own — businesses lease apartments too. Rent size is not evidence. If the rows don't settle it, keep the parser's label and answer unsure.
 
 Return one entry per shape, with the key copied verbatim.`;
+
+/** Candidate rows shown per shape, and other rows shown for comparison. */
+const ROWS_PER_SHAPE = 4;
+const OTHER_ROWS = 8;
+
+/** A row's shape key — the same grouping collectCategoryCandidates uses. */
+function shapeKeyOf(u: GenericRentRollUnit): string {
+  const { text } = typeTextOf(u);
+  const prior = (u.category ?? 'residential') as UnitCategory;
+  return `${prior}|${labelPrefix(u.unitNumber)}|${isBlankish(text) ? '(blank)' : text}`;
+}
+
+/** One row as the document prints it: unit id, then every captured column. */
+function renderRow(u: GenericRentRollUnit): string {
+  const cols = (u.sourceColumns ?? [])
+    .filter(c => c?.header && c.value !== null && c.value !== undefined && String(c.value).trim())
+    .slice(0, 24)
+    .map(c => `${c.header}: ${String(c.value).trim().slice(0, 60)}`);
+  // Extraction paths that capture no source columns, or that promoted the
+  // tenant column out of them: the tenant is part of what the model weighs.
+  if (u.tenantName && !(u.sourceColumns ?? []).some(c => String(c?.value ?? '').trim() === u.tenantName!.trim())) {
+    cols.push(`tenant: ${u.tenantName}`);
+  }
+  if (cols.length === 0 && u.unitType) cols.push(`unit type: ${u.unitType}`);
+  return `${u.unitNumber} | ${cols.join(' | ')}`;
+}
+
+/** Up to `n` items evenly spaced through `items`, so the sample spans the document. */
+function spread<T>(items: T[], n: number): T[] {
+  if (items.length <= n) return items;
+  return Array.from({ length: n }, (_, i) => items[Math.floor((i * items.length) / n)]);
+}
 
 /**
  * Review and correct row categories from a model-built read of this document's
@@ -325,36 +363,43 @@ export async function reviewUnitCategories(
   usages: AIUsage[]
 ): Promise<{
   reviewed: number;
-  changed: { units: string[]; from: UnitCategory; to: UnitCategory; evidence: EvidenceKind }[];
-  declined: { units: string[]; kept: UnitCategory; proposed: UnitCategory; evidence: EvidenceKind }[];
+  changed: { units: string[]; from: UnitCategory; to: UnitCategory; evidence: EvidenceKind[] }[];
+  declined: { units: string[]; kept: UnitCategory; proposed: UnitCategory; evidence: EvidenceKind[] }[];
 }> {
-  const { candidates, dwellingVocab, totalUnits } = collectCategoryCandidates(units);
+  const { candidates, totalUnits } = collectCategoryCandidates(units);
   if (candidates.length === 0) return { reviewed: 0, changed: [], declined: [] };
 
+  const byShape = new Map<string, GenericRentRollUnit[]>();
+  const others: GenericRentRollUnit[] = [];
+  const candidateKeys = new Set(candidates.map(c => c.key));
+  for (const u of units) {
+    const key = shapeKeyOf(u);
+    if (candidateKeys.has(key)) byShape.set(key, [...(byShape.get(key) ?? []), u]);
+    else others.push(u);
+  }
   const listing = candidates
     .map(c => {
-      const type = c.typeText
-        ? `${c.typeHeader ?? 'unit type'} = "${c.typeText}"`
-        : `no ${c.typeHeader ?? 'unit type'} value`;
-      return `- key "${c.key}"\n    ${c.count} row${c.count === 1 ? '' : 's'} (e.g. ${c.unitNumbers.join(', ')}), ${type}\n    parser's label: ${c.prior} — ${c.reason}`;
+      const rows = (byShape.get(c.key) ?? []).slice(0, ROWS_PER_SHAPE).map(u => `    ${renderRow(u)}`).join('\n');
+      return `- key "${c.key}" — ${c.count} row${c.count === 1 ? '' : 's'}; parser's label: ${c.prior} (${c.reason})\n${rows}`;
     })
     .join('\n');
-  const contrast = dwellingVocab.length > 0
-    ? `\n\nThis document's dwelling vocabulary — unit-type values its other rows DO carry: ${dwellingVocab.map(v => `"${v}"`).join(', ')}.`
-    : `\n\nThis document states no unit-type values anywhere, so a missing one is not evidence here.`;
+  const sample = spread(others, OTHER_ROWS).map(u => `    ${renderRow(u)}`).join('\n');
+  const comparison = sample
+    ? `\n\nTHE DOCUMENT'S OTHER ROWS (${others.length}${others.length > OTHER_ROWS ? `, ${OTHER_ROWS} shown` : ''}):\n${sample}`
+    : '';
 
   const validCategory = new Set<string>(CATEGORIES);
   const validEvidence = new Set<string>(EVIDENCE_KINDS);
-  let assigned = new Map<string, { category: UnitCategory; evidence: EvidenceKind }>();
+  let assigned = new Map<string, { category: UnitCategory; evidence: EvidenceKind[] }>();
   // One retry, matching classifyChargeCodes: the observed failures are
   // transient server-side 400s and the call is small enough to repeat.
   for (let attempt = 1; attempt <= 2 && assigned.size === 0; attempt++) {
     try {
-      const { data, usage } = await extractStructured<{ groups: { key: string; category: string; evidence: string }[] }>({
+      const { data, usage } = await extractStructured<{ groups: { key: string; category: string; evidence: string[] }[] }>({
         model: MODELS.fast,
         content: [{
           type: 'text',
-          text: `${PROMPT}\n\nROW SHAPES TO REVIEW (${candidates.length}, out of ${totalUnits} rows in the document):\n${listing}${contrast}`,
+          text: `${PROMPT}\n\nROW SHAPES TO REVIEW (${candidates.length}, out of ${totalUnits} rows in the document):\n${listing}${comparison}`,
         }],
         schema: REVIEW_SCHEMA,
         maxTokens: 8000,
@@ -363,8 +408,12 @@ export async function reviewUnitCategories(
       if (process.env.CATEGORY_DEBUG) console.warn('[categoryClassifier] raw:', JSON.stringify(data.groups));
       assigned = new Map(
         (data.groups ?? [])
-          .filter(g => g?.key && validCategory.has(g.category) && validEvidence.has(g.evidence))
-          .map(g => ({ key: g.key, category: g.category as UnitCategory, evidence: g.evidence as EvidenceKind }))
+          .filter(g => g?.key && validCategory.has(g.category) && Array.isArray(g.evidence))
+          .map(g => ({
+            key: g.key,
+            category: g.category as UnitCategory,
+            evidence: [...new Set(g.evidence.filter(e => validEvidence.has(e)))] as EvidenceKind[],
+          }))
           // Drop answers whose grounds contradict their conclusion. When that
           // leaves nothing usable the retry above asks again, which is the whole
           // reason a self-contradictory answer is worth detecting.
@@ -383,8 +432,8 @@ export async function reviewUnitCategories(
   if (assigned.size === 0) return { reviewed: 0, changed: [], declined: [] };
 
   const accepted = new Map<string, UnitCategory>();
-  const changed: { units: string[]; from: UnitCategory; to: UnitCategory; evidence: EvidenceKind }[] = [];
-  const declined: { units: string[]; kept: UnitCategory; proposed: UnitCategory; evidence: EvidenceKind }[] = [];
+  const changed: { units: string[]; from: UnitCategory; to: UnitCategory; evidence: EvidenceKind[] }[] = [];
+  const declined: { units: string[]; kept: UnitCategory; proposed: UnitCategory; evidence: EvidenceKind[] }[] = [];
   for (const c of candidates) {
     const proposal = assigned.get(c.key);
     if (!proposal) continue;
@@ -405,10 +454,8 @@ export async function reviewUnitCategories(
   // Re-derive each row's key the same way collectCategoryCandidates did, so the
   // accepted correction lands on exactly the rows that were put up for review.
   for (const u of units) {
-    const { text } = typeTextOf(u);
     const prior = (u.category ?? 'residential') as UnitCategory;
-    const key = `${prior}|${labelPrefix(u.unitNumber)}|${isBlankish(text) ? '(blank)' : text}`;
-    const to = accepted.get(key);
+    const to = accepted.get(shapeKeyOf(u));
     if (!to || to === prior) continue;
     u.category = to;
     // Ancillary income lines are the only rows excluded from the unit count.

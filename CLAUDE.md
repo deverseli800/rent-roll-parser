@@ -163,7 +163,11 @@ cross-document aggregation. Spend verification effort accordingly.
   paths (and the CLI/skill bundle, and the eval) get the same second look
   (`utils/categoryClassifier.ts`). It reviews only ambiguous row SHAPES — rows
   labelled commercial, and rows with no bed/bath value in a document whose
-  dwellings have one — so a clean roll costs no extra call. The model must name
-  document grounds; `tenant_or_rent_inference` and `unsure` are refused by the
-  gate, and an answer whose grounds contradict its own conclusion is discarded
-  and re-asked. Do not add tenant-name or rent-magnitude rules here.
+  dwellings have one — so a clean roll costs no extra call. The model sees the
+  rows verbatim (every captured column, tenant included) next to a sample of the
+  document's other rows, and judges them itself. Do not put example values or
+  patterns ("--/--", lettered unit ids) in the prompt: recognising them is the
+  judgment being asked for. Every move needs a structural ground (use label,
+  unit id naming the use, bed/bath or unit-type field). The tenant name may
+  corroborate a ground but is refused as the only one; rent size is never one.
+  An answer whose grounds contradict its own conclusion is discarded and re-asked.

@@ -47,7 +47,7 @@ export async function parseRentRoll(
     const { reviewed, changed, declined } = await reviewUnitCategories(parsed.units, reviewUsages);
     if (reviewed > 0) {
       const summary = changed.length > 0
-        ? `corrected ${changed.map(c => `${c.units.join('/')} ${c.from} → ${c.to} (${c.evidence})`).join('; ')}`
+        ? `corrected ${changed.map(c => `${c.units.join('/')} ${c.from} → ${c.to} (${c.evidence.join('+')})`).join('; ')}`
         : 'no corrections';
       report?.('validating', 'reviewing unit categories', {
         kind: 'info',
