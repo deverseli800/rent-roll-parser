@@ -13,6 +13,7 @@ Each exits non-zero on failure.
 | check | what it pins down |
 |---|---|
 | `capture-check` | Every populated column reaches `sourceColumns` **even when the mapper omits it** from `extraColumns` — the guarantee that a column can never be silently dropped. Also that charge columns are not duplicated and empty spacers are skipped. |
+| `header-check` | Captured columns are labelled from the header BLOCK: a header stacked over two rows is joined, a label above a blank header-row cell is found, merged cells are resolved — and a report title, "As Of" line, metadata block or totals row is never prepended. A single-row header comes out unchanged. |
 | `rent-check` | The four acceptance cases from the charge-category handoff, at exact amounts: a negative exemption column is not netted out of rent, a preferential column is, a block-layout preferential discount is subtracted without string-matching the code, and a block-layout exemption credit is not. |
 | `keyword-check` | `normalizeChargeCode` routes named exemption programs to `reimbursed_credit` and leaves ambiguous codes at `other` for the per-document classifier. Includes regression cases for the insurance-waiver and credit-builder bugs the keyword list already carries comments about. |
 | `override-check` | `gateProposal` — the classifier may fill abstentions and correct `concession` ↔ `reimbursed_credit`, and may not overrule the keyword prior on anything else. |

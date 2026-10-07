@@ -299,6 +299,103 @@ function rowText(sheet: XLSX.WorkSheet, r: number, maxCol: number): string {
   return parts.join(' ').toLowerCase();
 }
 
+interface StackedHeader {
+  /** Every line of the label, top to bottom, joined with a space. */
+  label: string;
+  /** The header row's own line ('' when that cell is blank). */
+  bottom: string;
+  /** True when the label spans more than one row of the block. */
+  stacked: boolean;
+  /** True when no line was printed in this column — all of it came from a merge anchored in another column. */
+  spreadOnly: boolean;
+}
+
+// Rows above the header row that may be part of it. Reports rarely stack a
+// header over more than three lines; past that it is title/metadata territory.
+const HEADER_BLOCK_MAX_ROWS_ABOVE = 3;
+const HEADER_LABEL_MAX_CHARS = 40;
+// "Borrower: …", "As Of = 08/04/2026", a printed date: report metadata, never a
+// column label.
+const HEADER_METADATA = /[:=]|\bas of\b|\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}/i;
+
+/**
+ * Column labels read from the header BLOCK rather than one row: the header row
+ * plus the label rows directly above it, with merged cells resolved. A report
+ * that prints "Actual" over "Rent" yields "Actual Rent", and a label sitting
+ * above a blank header-row cell ("Name" over nothing) is still found.
+ *
+ * A row above only joins the block when it looks like the top line of the same
+ * header — several short text cells covering a good share of the header's
+ * columns. Titles, "As Of" lines, totals rows and metadata blocks fail that
+ * test and end the climb, so they are never prepended to a label. When nothing
+ * qualifies the result is exactly the single-row read.
+ */
+function readHeaderBlock(
+  sheet: XLSX.WorkSheet,
+  headerRowIdx: number,
+  minCol: number,
+  maxCol: number
+): Map<number, StackedHeader> {
+  const merges = (sheet['!merges'] ?? []) as XLSX.Range[];
+  const mergeAt = (r: number, c: number): XLSX.Range | undefined =>
+    merges.find(m => r >= m.s.r && r <= m.e.r && c >= m.s.c && c <= m.e.c);
+  // A merged cell holds its text at the top-left anchor only.
+  const resolved = (r: number, c: number): { text: string | null; own: boolean } => {
+    const own = readString(cellValue(sheet, r, c));
+    if (own !== null) return { text: own, own: true };
+    const m = mergeAt(r, c);
+    if (!m) return { text: null, own: false };
+    return { text: readString(cellValue(sheet, m.s.r, m.s.c)), own: m.s.c === c };
+  };
+
+  let headerFilled = 0;
+  for (let c = minCol; c <= maxCol; c++) if (resolved(headerRowIdx, c).text !== null) headerFilled++;
+
+  const width = maxCol - minCol + 1;
+  const isLabelRow = (r: number): boolean => {
+    let printed = 0;
+    let covered = 0;
+    for (let c = minCol; c <= maxCol; c++) {
+      const cell = cellValue(sheet, r, c);
+      const own = readString(cell);
+      if (own !== null) {
+        if (cell!.t !== 's' || own.length > HEADER_LABEL_MAX_CHARS || HEADER_METADATA.test(own)) return false;
+        if (readNumber(cell) !== null && /^[\s$(),.\d%-]+$/.test(own)) return false;
+        // A title merged across the sheet is not a group band.
+        const m = mergeAt(r, c);
+        if (m && m.e.c - m.s.c + 1 > width / 2) return false;
+        printed++;
+      }
+      if (resolved(r, c).text !== null) covered++;
+    }
+    return printed >= 2 && covered >= Math.max(2, headerFilled / 2);
+  };
+
+  let top = headerRowIdx;
+  if (headerFilled >= 2) {
+    while (top > 0 && headerRowIdx - top < HEADER_BLOCK_MAX_ROWS_ABOVE && isLabelRow(top - 1)) top--;
+  }
+
+  const out = new Map<number, StackedHeader>();
+  for (let c = minCol; c <= maxCol; c++) {
+    const parts: string[] = [];
+    let spreadOnly = true;
+    for (let r = top; r <= headerRowIdx; r++) {
+      const { text, own } = resolved(r, c);
+      if (text === null) continue;
+      if (own) spreadOnly = false;
+      // A vertical merge resolves to the same text on each of its rows.
+      const line = text.trim();
+      if (parts.length && parts[parts.length - 1].toLowerCase() === line.toLowerCase()) continue;
+      parts.push(line);
+    }
+    if (parts.length === 0) continue;
+    const bottom = resolved(headerRowIdx, c).text?.trim() ?? '';
+    out.set(c, { label: parts.join(' '), bottom, stacked: parts.length > 1, spreadOnly });
+  }
+  return out;
+}
+
 function matchesAny(text: string, patterns: string[]): boolean {
   return patterns.some(p => p && text.includes(p.toLowerCase()));
 }
@@ -613,11 +710,24 @@ export function applyStructure(
   }
 
   const colLabel = (c: number): string => XLSX.utils.encode_col(c);
+  const headerBlock = headerRowIdx !== null
+    ? readHeaderBlock(sheet, headerRowIdx, range.s.c, maxCol)
+    : new Map<number, StackedHeader>();
+  const sameText = (a: string, b: string): boolean =>
+    a.replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/\s+/g, ' ').trim().toLowerCase();
+  const labelsGiven = new Set<string>();
   const headerFor = (c: number): string => {
     const fromMapper = mapperHeaders.get(c);
-    if (fromMapper) return fromMapper;
-    const fromRow = headerRowIdx !== null ? readString(cellValue(sheet, headerRowIdx, c)) : null;
-    if (fromRow) return fromRow.trim();
+    const fromBlock = headerBlock.get(c);
+    // The mapper is told to name the LAST row of a stacked header, so its text
+    // for such a column can be just the bottom line. Only then does the block
+    // read replace it.
+    if (fromMapper && !(fromBlock?.stacked && sameText(fromMapper, fromBlock.bottom))) return fromMapper;
+    // A label that reached this column only through a horizontal merge, and
+    // that an earlier column already carries, would give two columns one name.
+    if (fromBlock && !(fromBlock.spreadOnly && labelsGiven.has(fromBlock.label.toLowerCase()))) {
+      return fromBlock.label;
+    }
     return `Column ${colLabel(c)}`;
   };
 
@@ -630,7 +740,11 @@ export function applyStructure(
     for (let rr = firstDataRow; rr <= range.e.r; rr++) {
       if (readString(cellValue(sheet, rr, c)) !== null) { populated = true; break; }
     }
-    if (populated) capturedCols.push({ header: headerFor(c), index: c });
+    if (populated) {
+      const header = headerFor(c);
+      labelsGiven.add(header.toLowerCase());
+      capturedCols.push({ header, index: c });
+    }
   }
   // Charge columns are already captured verbatim (code + amount) in charges[],
   // and the unit id is the record key — re-emitting them would duplicate the
