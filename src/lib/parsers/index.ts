@@ -117,5 +117,3 @@ async function parseByType(
   throw new Error(`Unsupported file type: ${extension}`);
 }
 
-export { parseExcel } from './excel';
-export { parsePDF } from './pdf';

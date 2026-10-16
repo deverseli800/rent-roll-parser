@@ -97,7 +97,6 @@ Target: macro-average field accuracy >= 95% (achieved: see eval/runs/).
   gitignored `eval/runs/pdf-parallel/` (they carry corpus ids and per-file results).
 - `src/lib/parsers/pdfV2.ts` — whole-document vision extraction (handles scans) with
   the same ladder; used for single-page PDFs and when the splitter rejects a file.
-- `src/lib/parsers/excel.ts` / `pdf.ts` — legacy v1 parsers, kept for reference.
 - Structured outputs (`output_config.format` json_schema) guarantee valid JSON; all
   calls stream (required for 64K max_tokens).
 

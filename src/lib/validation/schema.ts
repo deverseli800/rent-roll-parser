@@ -148,36 +148,5 @@ export const RentRollExtractionSchema = z.object({
   error: z.string().nullable(),
 });
 
-// Schema for Claude Vision API response
-export const ClaudeExtractionResponseSchema = z.object({
-  propertyName: z.string().nullable().optional(),
-  statedTotalUnits: z.number().nullable().optional(),
-  // Stated summary values from document
-  statedSummary: z.object({
-    totalMonthlyRent: z.number().nullable().optional(),
-    totalSqft: z.number().nullable().optional(),
-    occupancyRate: z.number().nullable().optional(),
-    occupiedUnits: z.number().nullable().optional(),
-    vacantUnits: z.number().nullable().optional(),
-  }).optional(),
-  units: z.array(z.object({
-    unitNumber: z.string(),
-    status: z.string(),
-    monthlyRent: z.number().nullable().optional(),
-    tenantName: z.string().nullable().optional(),
-    // Additional fields
-    unitSqft: z.number().nullable().optional(),
-    unitType: z.string().nullable().optional(),
-    leaseStatus: z.string().nullable().optional(),
-    moveInDate: z.string().nullable().optional(),
-    moveOutDate: z.string().nullable().optional(),
-    leaseStartDate: z.string().nullable().optional(),
-    leaseEndDate: z.string().nullable().optional(),
-  })),
-  extractedCount: z.number().optional(),
-  countMatch: z.boolean().optional(),
-});
-
 export type GenericRentRollUnitInput = z.infer<typeof GenericRentRollUnitSchema>;
 export type RentRollExtractionInput = z.infer<typeof RentRollExtractionSchema>;
-export type ClaudeExtractionResponse = z.infer<typeof ClaudeExtractionResponseSchema>;
