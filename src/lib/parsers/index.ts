@@ -1,5 +1,6 @@
 import { parseExcelV2 } from './excelV2';
 import { parsePDFV2 } from './pdfV2';
+import { parsePDFParallel } from './pdfParallel';
 import { reviewUnitCategories } from '../utils/categoryClassifier';
 import { estimateCostUSD } from '../utils/aiCost';
 import type { AIUsage } from './aiClient';
@@ -94,7 +95,10 @@ async function parseByType(
   }
 
   if (extension === 'pdf') {
-    const result = await parsePDFV2(buffer, report);
+    // Multi-page PDFs are extracted page-by-page in parallel (minutes -> tens
+    // of seconds); single-page PDFs, and any the splitter rejects, go through
+    // the whole-document path.
+    const result = (await parsePDFParallel(buffer, report)) ?? (await parsePDFV2(buffer, report));
     return {
       units: result.units,
       statedUnitCount: result.statedUnitCount,

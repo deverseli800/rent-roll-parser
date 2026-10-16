@@ -428,10 +428,11 @@ const PREVIEW_PROMPT = `Report ONLY the summary information this rent roll docum
 
 Look for a summary/totals section (often at the very top or bottom): "Total Units", a "Summary" block, occupancy percentages, total monthly rent / total sqft rows, current-vs-vacant unit counts.
 - propertyName: the property name shown in the document, if any.
-- statedTotalUnits: the total unit count the document STATES (not your own count of rows); -1 if not stated.
+- statedTotalUnits: the total unit count the document STATES (not your own count of rows); -1 if not stated. It must be a count of UNITS/apartments — a totals row prints a sum under every numeric column (rooms, sqft, rent), and the figure under a rooms or sqft column is NOT a unit count.
 - statedSummary: totals the document states. Report -1 for anything the document does not explicitly state — do NOT compute, sum, or estimate values yourself.
   When the document shows MULTIPLE summary figures, report the CURRENT/actual ones: totalMonthlyRent is the current RENT total (not market/scheduled/potential rent, and not a total-charges figure that adds fees); a stated market/potential rent total goes in totalMarketRent; occupancyRate is current physical occupancy (not projected, leased %, or economic occupancy).
 - units: [] — always empty in this pass.
+- MULTI-PROPERTY / MULTI-SECTION documents: when the document covers several buildings or properties each with its own totals block, report the DOCUMENT-WIDE figures — the grand total if one is printed (often on the last page), otherwise the SUM of the per-property totals. Never report a single property's or section's total as the document total.
 - occupiedUnits/vacantUnits must be PHYSICAL-occupancy counts. A "Units Available"/"Available" figure is a LEASED-STATUS metric (it counts occupied-notice units that are not re-leased and excludes vacant-leased units) — NEVER report it as vacantUnits. Use an explicitly vacant-labeled count instead; when the document gives a status breakdown, sum the vacant statuses (e.g. "Vacant Leased" + "Vacant Not Leased"). If only an "Available" figure exists, report vacantUnits as -1.
 This is a fast first pass. Respond as quickly as possible.`;
 
@@ -547,24 +548,41 @@ export function verifyAgainstStated(r: ExtractionResult): VerificationOutcome {
   const notes: string[] = [];
   let hasStatedAnchors = false;
 
+  const statedRent = r.statedSummary?.totalMonthlyRent ?? null;
+  const rentSum = r.units.reduce((s, u) => s + (u.monthlyRent ?? 0), 0);
+
   let countMatches = false;
   if (r.statedTotalUnits !== null && r.statedTotalUnits > 0) {
     hasStatedAnchors = true;
     const countRec = reconcileUnitCount(r.statedTotalUnits, r.units);
     countMatches = countRec.ok;
-    if (!countRec.ok) {
+    // Misread-count guard. A totals row sums every numeric column, and a quick
+    // read can take the rooms or sqft total for the unit count (observed on a
+    // scanned roll whose totals row prints the rooms total beside the rent). When
+    // the stated RENT total reconciles to the extracted units, the unit set is
+    // complete, so a count that is off by more than half is the wrong figure,
+    // not missing units — note it rather than send the parse up the ladder.
+    const rentReconciles =
+      statedRent !== null && statedRent > 0 && Math.abs(rentSum - statedRent) <= Math.max(5, statedRent * 0.005);
+    const grosslyOff = Math.abs(r.statedTotalUnits - r.units.length) > r.statedTotalUnits * 0.5;
+    if (!countRec.ok && rentReconciles && grosslyOff) {
+      notes.push(
+        `Document appears to state ${r.statedTotalUnits} units but ${r.units.length} were extracted and their rents sum exactly to the stated total — ` +
+        `the figure is most likely another column's total (rooms, sqft), so the unit count was not used as a check.`
+      );
+      r.statedTotalUnits = null;
+    } else if (!countRec.ok) {
       issues.push(
         `Document states ${r.statedTotalUnits} total units but ${r.units.length} were extracted`
       );
     }
   }
 
-  const statedRent = r.statedSummary?.totalMonthlyRent ?? null;
   const statedMarket = r.statedSummary?.totalMarketRent ?? null;
   const sumMarket = r.units.reduce((s, u) => s + (u.marketRent ?? 0), 0);
   if (statedRent !== null && statedRent > 0) {
     hasStatedAnchors = true;
-    const sum = r.units.reduce((s, u) => s + (u.monthlyRent ?? 0), 0);
+    const sum = rentSum;
     const tol = Math.max(5, statedRent * 0.005);
     // When the unit count matches the stated count and the sum only EXCEEDS the
     // stated total, the document's total likely excludes other income (antenna,
@@ -1115,11 +1133,69 @@ export async function runExtractionLadder(
   return best.result;
 }
 
-function unitNumberMultiset(units: ExtractedUnit[]): string {
+export function unitNumberMultiset(units: ExtractedUnit[]): string {
   return units
     .map(u => String(u.unitNumber).toUpperCase().replace(/[#\s.,_/\\-]+/g, ''))
     .sort()
     .join('|');
+}
+
+/**
+ * Re-derive monthlyRent from the captured charge lines, document-wide.
+ *
+ * Extraction workers that never see each other's output (parallel page
+ * workers) make the judgment calls in the rent rules independently: one nets
+ * a concession out of rent, the next does not; one reports a vacant's 0.00,
+ * the next null. Each unit's charge lines are captured verbatim either way, so
+ * the rent figure can be re-derived from them under ONE convention. When the
+ * sum of every unit's rent-category lines (base rent + subsidy) reconciles to
+ * the stated rent total, that is the convention the document prints its total
+ * under — apply it to every unit that has a rent line. A unit with no rent
+ * line keeps the model's figure. Vacant/down units with a 0 rent and no rent
+ * line become null: nothing was charged.
+ *
+ * Returns a description of what happened (for the progress timeline), or null
+ * when the document itemizes no charges and nothing was touched.
+ */
+export function reconcileRentWithChargeLines(r: ExtractionResult): string | null {
+  const rentLine = (u: ExtractedUnit): number | null => {
+    const lines = (u.charges ?? []).filter(c => {
+      if (!c || typeof c.amount !== 'number' || !c.code || CHARGE_TOTAL_LINE.test(c.code.trim())) return false;
+      const cat = c.category ?? createCharge(c.code.trim(), c.amount).category;
+      return cat === 'base_rent' || cat === 'subsidy';
+    });
+    return lines.length ? Math.round(lines.reduce((a, c) => a + c.amount, 0) * 100) / 100 : null;
+  };
+  const withLine = r.units.filter(u => rentLine(u) !== null);
+  if (withLine.length === 0) return null;
+
+  let zeroed = 0;
+  for (const u of r.units) {
+    if (u.monthlyRent === 0 && rentLine(u) === null && u.status !== 'occupied' && u.status !== 'notice') {
+      u.monthlyRent = null;
+      zeroed++;
+    }
+  }
+  const zeroNote = zeroed ? `; ${zeroed} vacant unit${zeroed === 1 ? '' : 's'} with no rent line set to null` : '';
+  if (withLine.length < r.units.length * 0.5) {
+    return `only ${withLine.length} of ${r.units.length} units have rent charge lines — rent left as extracted${zeroNote}`;
+  }
+  const stated = r.statedSummary?.totalMonthlyRent ?? null;
+  const sumLine = r.units.reduce((a, u) => a + (rentLine(u) ?? u.monthlyRent ?? 0), 0);
+  if (stated === null || stated <= 0) {
+    return `document states no rent total to reconcile the charge lines against — rent left as extracted${zeroNote}`;
+  }
+  const tol = Math.max(5, stated * 0.005);
+  if (Math.abs(sumLine - stated) > tol) {
+    return `rent charge lines sum to ${sumLine.toFixed(2)} against a stated ${stated.toFixed(2)} — rent left as extracted${zeroNote}`;
+  }
+  let changed = 0;
+  for (const u of withLine) {
+    const v = rentLine(u)!;
+    if (u.monthlyRent !== v) { u.monthlyRent = v; changed++; }
+  }
+  return `rent charge lines sum to the stated total ${stated.toFixed(2)} — ` +
+    (changed ? `${changed} unit${changed === 1 ? '' : 's'} re-derived to the rent-line figure` : 'every unit already matched') + zeroNote;
 }
 
 /**

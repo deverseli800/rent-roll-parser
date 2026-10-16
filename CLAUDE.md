@@ -30,11 +30,11 @@ A Next.js web application that extracts structured data from multifamily real es
    in `data/extractions/{id}.json` and returns immediately (202)
 2. A background job (`src/lib/server/processExtraction.ts`) runs in the server
    process: `parseRentRoll()` (with live progress written to the record —
-   stage, attempt/model, KB streamed), then `calculateSummaryStats()`,
+   stage, attempt/model, pages done), then `calculateSummaryStats()`,
    `validateExtraction()`, `runVerificationChecks()`, `explainMismatches()`
 3. The client polls `GET /api/extraction/[id]` every 2.5s; the extraction page
-   shows a live progress view while `status === 'processing'` (large documents
-   take 5-25 minutes)
+   shows a live progress view while `status === 'processing'` (multi-page PDFs
+   take tens of seconds; large Excel sheets still take minutes)
 4. On completion the client saves the result to localStorage (which remains the
    store for review edits/approval); a stale-heartbeat check (10 min) surfaces
    jobs killed by a server restart as errors
@@ -86,7 +86,17 @@ Target: macro-average field accuracy >= 95% (achieved: see eval/runs/).
 - `src/lib/parsers/excelV2.ts` — all-sheet reading (cellNF/cellText for date formats),
   heuristic + AI sheet triage, per-sheet full-AI extraction with structured outputs,
   update-log sheet subset dedupe, multi-sheet stated-total merging.
-- `src/lib/parsers/pdfV2.ts` — vision extraction (handles scans) with the same ladder.
+- `src/lib/parsers/pdfParallel.ts` — multi-page PDFs: split into single-page PDFs
+  (pdf-lib), one Sonnet worker per page with its neighbours as context, all pages
+  concurrent, stitched in page order; `reconcileRentWithChargeLines` then re-derives
+  rent from the captured charge lines document-wide (parallel workers net out
+  concessions inconsistently — the charge lines make the figure deterministic);
+  same verification gate and model ladder as the single-call path. Tens of minutes
+  → tens of seconds on a few-hundred-unit roll. `PDF_PAGE_CONCURRENCY` caps the
+  workers (32). The research harness and per-document measurements live in the
+  gitignored `eval/runs/pdf-parallel/` (they carry corpus ids and per-file results).
+- `src/lib/parsers/pdfV2.ts` — whole-document vision extraction (handles scans) with
+  the same ladder; used for single-page PDFs and when the splitter rejects a file.
 - `src/lib/parsers/excel.ts` / `pdf.ts` — legacy v1 parsers, kept for reference.
 - Structured outputs (`output_config.format` json_schema) guarantee valid JSON; all
   calls stream (required for 64K max_tokens).
