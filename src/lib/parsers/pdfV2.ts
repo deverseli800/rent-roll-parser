@@ -27,7 +27,7 @@ function detectPageCount(buffer: Buffer): number | null {
  * escalates to stronger models with feedback when verification fails.
  */
 
-const PDF_PROMPT = `${EXTRACTION_RULES}
+export const PDF_PROMPT = `${EXTRACTION_RULES}
 
 Additional guidance for PDFs:
 - Read EVERY page. Units often continue across page boundaries — do not stop at the first summary block if more unit sections follow.
